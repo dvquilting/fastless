@@ -1,0 +1,5 @@
+/fastless
+/literal-tests
+/rust/target/
+__pycache__/
+*.py[cod]
