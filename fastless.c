@@ -48,6 +48,7 @@ static unsigned search_threads = 1;
 #ifndef SEARCH_PIECE
 #define SEARCH_PIECE ((size_t)4 << 20)
 #endif
+#define SEARCH_STACK ((size_t)8 << 20)
 static void signal_handler(int sig) {
     if (sig == SIGWINCH) resized = 1;
     else { interrupted = 1; if (sig == SIGTERM || sig == SIGHUP) exiting = sig; }
@@ -397,8 +398,17 @@ static int search_pieces(const Search *s, bool forward, size_t low, size_t high,
     atomic_init(&job.best, SIZE_MAX);
     pthread_t threads[256];
     unsigned started = 0;
+    /* Give workers a main-thread-sized stack for regexec; macOS defaults
+       secondary threads to 512 KiB. */
+    pthread_attr_t attr;
+    bool sized = !pthread_attr_init(&attr);
+    if (sized && pthread_attr_setstacksize(&attr, SEARCH_STACK)) {
+        pthread_attr_destroy(&attr);
+        sized = false;
+    }
     while (started + 1 < search_threads && started + 1 < job.count &&
-           !pthread_create(&threads[started], NULL, search_worker, &job)) ++started;
+           !pthread_create(&threads[started], sized ? &attr : NULL, search_worker, &job)) ++started;
+    if (sized) pthread_attr_destroy(&attr);
     search_worker(&job);
     for (unsigned i = 0; i < started; ++i) pthread_join(threads[i], NULL);
     if (interrupted) return -1;
