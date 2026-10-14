@@ -1,5 +1,7 @@
 /fastless
 /literal-tests
+/fastless-tiny
+*.o
 /rust/target/
 __pycache__/
 *.py[cod]

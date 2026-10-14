@@ -8,6 +8,7 @@ use std::{
         io::{AsRawFd, FromRawFd},
     },
     path::{Path, PathBuf},
+    sync::mpsc,
     time::Instant,
 };
 const CHUNK: usize = 8 * 1024 * 1024;
@@ -163,8 +164,8 @@ pub fn open(path: &Path, mode: &str, dir: Option<&Path>, threads: u32) -> Result
     } else {
         threads
     };
-    let mut buffer = vec![0u8; CHUNK];
-    // Decoder must drop before the buffers/maps whose pointers it retains.
+    // Decoder must drop before the source map whose pointers it retains; the
+    // output buffers are only touched inside `step`.
     let mut decoder = Decoder::new(format, threads).map_err(|e| format!("{format}: {e}"))?;
     if source.len > 0 {
         unsafe {
@@ -180,6 +181,46 @@ pub fn open(path: &Path, mode: &str, dir: Option<&Path>, threads: u32) -> Result
         let _ = io::stderr().flush();
     }
     let data = source.bytes();
+    // Decoding continues into one buffer while the writer thread writes the
+    // other out.
+    let (full, filled) = mpsc::sync_channel::<(Vec<u8>, usize)>(1);
+    let (emptied, empty) = mpsc::channel::<Vec<u8>>();
+    let _ = emptied.send(vec![0u8; CHUNK]);
+    let output = &output_file;
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(move || {
+            for (buffer, length) in filled {
+                write_output(output, &buffer[..length])?;
+                if emptied.send(buffer).is_err() {
+                    break;
+                }
+            }
+            Ok::<(), String>(())
+        });
+        let decoded = decode(format, data, &mut decoder, &mut progress, full, empty);
+        let wrote = writer.join().unwrap().map_err(|e| format!("{format}: {e}"));
+        match decoded {
+            Err(e) if e.is_empty() => wrote.and(Err(format!("{format}: Temporary-file write failed"))),
+            other => other.and(wrote),
+        }
+    })?;
+    if signals::cancelled() {
+        return Err("Decompression interrupted".into());
+    }
+    Mapped::new(&output_file)
+}
+/// Runs the decoder over `data`, passing each filled buffer to the writer
+/// through `full` and taking a free one back from `empty`. An empty error
+/// means the writer stopped, in which case the writer holds the reason.
+fn decode(
+    format: &str,
+    data: &[u8],
+    decoder: &mut Decoder,
+    progress: &mut Progress,
+    full: mpsc::SyncSender<(Vec<u8>, usize)>,
+    empty: mpsc::Receiver<Vec<u8>>,
+) -> Result<(), String> {
+    let mut buffer = vec![0u8; CHUNK];
     let (mut pos, mut written) = (0usize, 0usize);
     loop {
         if signals::cancelled() {
@@ -194,8 +235,14 @@ pub fn open(path: &Path, mode: &str, dir: Option<&Path>, threads: u32) -> Result
             .checked_add(step.produced)
             .filter(|n| *n <= isize::MAX as usize)
             .ok_or("Decompressed file exceeds address/file size limits")?;
-        write_output(&output_file, &buffer[..step.produced])
-            .map_err(|e| format!("{format}: {e}"))?;
+        if step.produced > 0 {
+            // Hand the full buffer to the writer and decode on into the other.
+            // Either channel closing means the writer failed; it reports why.
+            if full.send((buffer, step.produced)).is_err() {
+                return Err(String::new());
+            }
+            buffer = empty.recv().map_err(|_| String::new())?;
+        }
         if progress.enabled && progress.last.elapsed().as_secs_f64() >= 0.25 {
             eprint!(
                 "\rDecompressing {format}: {:.1}% input, {:.2} GiB output\x1b[K",
@@ -231,8 +278,5 @@ pub fn open(path: &Path, mode: &str, dir: Option<&Path>, threads: u32) -> Result
             return Err(format!("{format}: Truncated or invalid {format} stream"));
         }
     }
-    if signals::cancelled() {
-        return Err("Decompression interrupted".into());
-    }
-    Mapped::new(&output_file)
+    Ok(())
 }

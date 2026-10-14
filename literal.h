@@ -10,6 +10,10 @@ typedef struct {
     bool fold;
 } Literal;
 
+/* The only case folding used anywhere: ASCII letters. */
+static inline unsigned char literal_lower(unsigned char c) {
+    return c >= 'A' && c <= 'Z' ? (unsigned char)(c + ('a' - 'A')) : c;
+}
 /* No -mavx2 global compiler flag: unsupported CPUs keep the portable path. */
 bool literal_simd_configure(const char *mode);
 bool literal_avx2_enabled(void);

@@ -23,25 +23,42 @@ Keys: Space/f page, b previous page, j/k line, g/G start/end, / and ? search,\n\
 LESS -i/-I supplies smart/always ignore-case defaults; CLI options override.\n\
 --compression auto|none|gzip|zstd|xz: detect/force format (default: auto).\n\
 --tmpdir DIR: decoded temporary file (default: TMPDIR or /tmp).\n\
---threads N: xz threads (0: auto up to 32; maximum: 256).\n\
+--threads N: search and xz threads (0: auto up to 32; maximum: 256).\n\
 --simd auto|off|avx2: search acceleration (default: auto).\n\
 Compressed input is fully decoded before paging/searching; offsets are decoded bytes.\n"
     );
 }
 fn less_options() -> u8 {
     let mut mode = 0;
-    if let Some(value) = std::env::var_os("LESS") {
-        for token in value.as_bytes().split(|b| b.is_ascii_whitespace()) {
-            if token.len() > 1 && token[0] == b'-' && token[1] != b'-' {
-                for &c in &token[1..] {
-                    if c == b'i' {
-                        mode = 1;
-                    }
-                    if c == b'I' {
-                        mode = 2;
-                    }
-                }
+    let Some(value) = std::env::var_os("LESS") else {
+        return mode;
+    };
+    // As in less: the leading '-' is optional, flags may be clustered, and a
+    // string-valued option (or +command) runs to the next '$' or the end.
+    let text = value.as_bytes();
+    let mut i = 0;
+    while i < text.len() {
+        let c = text[i];
+        i += 1;
+        if c == b'-' && text.get(i) == Some(&b'-') {
+            let name = i + 1;
+            while i < text.len() && !text[i].is_ascii_whitespace() {
+                i += 1;
             }
+            match &text[name..i] {
+                b"ignore-case" => mode = 1,
+                b"IGNORE-CASE" => mode = 2,
+                _ => (),
+            }
+        } else if b"+DkoOpPtT\"".contains(&c) {
+            while i < text.len() && text[i] != b'$' {
+                i += 1;
+            }
+            i += 1;
+        } else if c == b'i' {
+            mode = 1;
+        } else if c == b'I' {
+            mode = 2;
         }
     }
     mode
@@ -142,6 +159,10 @@ fn execute() -> Result<i32, String> {
         return Err("A 64-bit build is required".into());
     }
     let simd = Simd::configure(&simd_mode)?;
+    if threads == 0 {
+        threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(32) as u32);
+    }
+    search::set_threads(threads as usize);
     if pattern.is_none() && (unsafe { libc::isatty(0) } != 1 || unsafe { libc::isatty(1) } != 1) {
         return Err("Pager needs a terminal; use --find for noninteractive searching".into());
     }

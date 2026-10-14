@@ -89,13 +89,15 @@ extern "C" {
 }
 fn xz_error(code: i32) -> String {
     match code {
-        6 => "Cannot allocate xz decoder memory",
-        7 => "xz decoder needs more than the 512 MiB memory limit",
+        // lzma_ret values from lzma/base.h.
+        5 => "Cannot allocate xz decoder memory",
+        6 => "xz decoder needs more than the 512 MiB memory limit",
+        7 => "Invalid xz format",
         8 => "Unsupported xz compression options",
         3 => "Unsupported xz integrity check",
         9 => "Corrupt xz stream or checksum",
         10 => "Truncated xz stream",
-        _ => "Invalid xz stream or decoder error",
+        _ => "xz decoder error",
     }
     .into()
 }

@@ -13,10 +13,10 @@
 #define HAVE_AVX2_KERNEL 0
 #endif
 #define SCAN_CHUNK (8u * 1024u * 1024u)
+/* Candidates given to the skip-table/libc scan after a dense AVX2 block,
+   before AVX2 is tried again. */
+#define DENSE_WINDOW (64u * 1024u)
 static bool use_avx2, force_avx2;
-static unsigned char lower(unsigned char c) {
-    return c >= 'A' && c <= 'Z' ? (unsigned char)(c + ('a' - 'A')) : c;
-}
 bool literal_simd_configure(const char *mode) {
     bool available = false;
 #if HAVE_AVX2_KERNEL
@@ -35,21 +35,21 @@ void literal_init(Literal *p, const void *text, size_t length, bool fold) {
     for (size_t i = 0; i < 256; ++i) p->skip[i] = p->reverse_skip[i] = length;
     if (!length) return;
     for (size_t i = 0; i + 1 < length; ++i)
-        p->skip[fold ? lower(p->text[i]) : p->text[i]] = length - 1 - i;
+        p->skip[fold ? literal_lower(p->text[i]) : p->text[i]] = length - 1 - i;
     for (size_t i = length; i > 1; --i)
-        p->reverse_skip[fold ? lower(p->text[i - 1]) : p->text[i - 1]] = i - 1;
+        p->reverse_skip[fold ? literal_lower(p->text[i - 1]) : p->text[i - 1]] = i - 1;
     /* Prefer a different second byte to reject repetitive data cheaply. */
     p->anchor = length - 1;
-    unsigned char first = fold ? lower(p->text[0]) : p->text[0];
+    unsigned char first = fold ? literal_lower(p->text[0]) : p->text[0];
     for (size_t i = length; i > 1; --i) {
-        unsigned char c = fold ? lower(p->text[i - 1]) : p->text[i - 1];
+        unsigned char c = fold ? literal_lower(p->text[i - 1]) : p->text[i - 1];
         if (c != first) { p->anchor = i - 1; break; }
     }
 }
 static bool equal(const Literal *p, const unsigned char *data) {
     if (!p->fold) return !memcmp(data, p->text, p->len);
     for (size_t i = 0; i < p->len; ++i)
-        if (lower(data[i]) != lower(p->text[i])) return false;
+        if (literal_lower(data[i]) != literal_lower(p->text[i])) return false;
     return true;
 }
 static const unsigned char *find_portable(const Literal *p, const unsigned char *data,
@@ -68,9 +68,9 @@ static const unsigned char *find_portable(const Literal *p, const unsigned char 
         while (pos <= last) {
             if (!(ticks++ & 65535) && *cancel) return NULL;
             size_t j = p->len;
-            while (j && lower(data[pos + j - 1]) == lower(p->text[j - 1])) --j;
+            while (j && literal_lower(data[pos + j - 1]) == literal_lower(p->text[j - 1])) --j;
             if (!j) return data + pos;
-            size_t step = p->skip[lower(data[pos + p->len - 1])];
+            size_t step = p->skip[literal_lower(data[pos + p->len - 1])];
             if (step > last - pos) break;
             pos += step;
         }
@@ -83,7 +83,7 @@ static const unsigned char *reverse_portable(const Literal *p, const unsigned ch
     for (;;) {
         if (!(ticks++ & 65535) && *cancel) return NULL;
         if (equal(p, data + pos)) return data + pos;
-        unsigned char first = p->fold ? lower(data[pos]) : data[pos];
+        unsigned char first = p->fold ? literal_lower(data[pos]) : data[pos];
         size_t step = p->reverse_skip[first];
         if (step > pos) break;
         pos -= step;
@@ -121,8 +121,8 @@ static const unsigned char *verify_forward(const Literal *p, const unsigned char
 AVX2_TARGET static const unsigned char *find_avx2(const Literal *p, const unsigned char *data,
                                                  size_t length, volatile sig_atomic_t *cancel) {
     size_t candidates = length - p->len + 1, pos = 0, ticks = 0;
-    unsigned char a = p->fold ? lower(p->text[0]) : p->text[0];
-    unsigned char b = p->fold ? lower(p->text[p->anchor]) : p->text[p->anchor];
+    unsigned char a = p->fold ? literal_lower(p->text[0]) : p->text[0];
+    unsigned char b = p->fold ? literal_lower(p->text[p->anchor]) : p->text[p->anchor];
     bool fold_a = p->fold && a >= 'a' && a <= 'z';
     bool fold_b = p->fold && b >= 'a' && b <= 'z';
     __m256i first = _mm256_set1_epi8((char)a), second = _mm256_set1_epi8((char)b);
@@ -144,10 +144,17 @@ AVX2_TARGET static const unsigned char *find_avx2(const Literal *p, const unsign
             if (q) return q;
             q = verify_forward(p, data + pos + 96, (unsigned)_mm256_movemask_epi8(m3), &failed);
             if (q) return q;
-            /* Dense false positives favor the skip-table/libc algorithm. */
+            /* Dense false positives favor the skip-table/libc algorithm, but
+               only locally: the data may well be sparse again further on. */
             if (failed >= 16) {
                 pos += 128;
-                return pos < candidates ? find_portable(p, data + pos, length - pos, cancel) : NULL;
+                size_t window = candidates - pos;
+                if (!window) return NULL;
+                if (window > DENSE_WINDOW) window = DENSE_WINDOW;
+                q = find_portable(p, data + pos, window + p->len - 1, cancel);
+                if (q || *cancel) return q;
+                pos += window;
+                continue;
             }
         }
         pos += 128;
@@ -168,8 +175,8 @@ AVX2_TARGET static const unsigned char *find_avx2(const Literal *p, const unsign
 AVX2_TARGET static const unsigned char *reverse_avx2(const Literal *p, const unsigned char *data,
                                                     size_t candidates, volatile sig_atomic_t *cancel) {
     size_t ticks = 0;
-    unsigned char a = p->fold ? lower(p->text[0]) : p->text[0];
-    unsigned char b = p->fold ? lower(p->text[p->anchor]) : p->text[p->anchor];
+    unsigned char a = p->fold ? literal_lower(p->text[0]) : p->text[0];
+    unsigned char b = p->fold ? literal_lower(p->text[p->anchor]) : p->text[p->anchor];
     bool fold_a = p->fold && a >= 'a' && a <= 'z';
     bool fold_b = p->fold && b >= 'a' && b <= 'z';
     __m256i first = _mm256_set1_epi8((char)a), second = _mm256_set1_epi8((char)b);
@@ -188,8 +195,12 @@ AVX2_TARGET static const unsigned char *reverse_avx2(const Literal *p, const uns
             mask &= ~(1u << bit);
         }
         candidates = pos;
-        if (failed >= 8)
-            return candidates ? reverse_portable(p, data, candidates, cancel) : NULL;
+        if (failed >= 8 && candidates) {
+            size_t window = candidates < DENSE_WINDOW ? candidates : DENSE_WINDOW;
+            const unsigned char *q = reverse_portable(p, data + candidates - window, window, cancel);
+            if (q || *cancel) return q;
+            candidates -= window;
+        }
     }
     while (candidates) {
         --candidates;

@@ -36,6 +36,10 @@ pub struct Literal {
     anchor: usize,
     simd: Simd,
 }
+/// Candidates given to the skip-table/libc scan after a dense AVX2 block,
+/// before AVX2 is tried again.
+#[cfg(target_arch = "x86_64")]
+const DENSE_WINDOW: usize = 64 * 1024;
 #[inline]
 pub fn lower(c: u8) -> u8 {
     if c.is_ascii_uppercase() {
@@ -274,13 +278,23 @@ mod avx2 {
                             return Some(hit);
                         }
                     }
+                    // Dense false positives favor the skip-table/libc algorithm,
+                    // but only locally: the data may be sparse again further on.
                     if failed >= 16 {
                         pos += 128;
-                        return if pos < count {
-                            self.find_portable(&data[pos..]).map(|hit| hit + pos)
-                        } else {
-                            None
-                        };
+                        let window = (count - pos).min(DENSE_WINDOW);
+                        if window == 0 {
+                            return None;
+                        }
+                        let range = &data[pos..pos + window + self.text.len() - 1];
+                        if let Some(hit) = self.find_portable(range) {
+                            return Some(hit + pos);
+                        }
+                        if signals::cancelled() {
+                            return None;
+                        }
+                        pos += window;
+                        continue;
                     }
                 }
                 pos += 128;
@@ -341,12 +355,16 @@ mod avx2 {
                     mask &= !(1u32 << bit);
                 }
                 count = pos;
-                if failed >= 8 {
-                    return if count > 0 {
-                        self.reverse_portable(data, count)
-                    } else {
-                        None
-                    };
+                if failed >= 8 && count > 0 {
+                    let window = count.min(DENSE_WINDOW);
+                    let low = count - window;
+                    if let Some(hit) = self.reverse_portable(&data[low..], window) {
+                        return Some(hit + low);
+                    }
+                    if signals::cancelled() {
+                        return None;
+                    }
+                    count = low;
                 }
             }
             while count > 0 {

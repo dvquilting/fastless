@@ -33,9 +33,10 @@ changing algorithms/libraries. The small native codec ABI bindings are isolated
 in `src/codecs.rs`; platform libc layouts come from the libc crate.
 
 The same 8 MiB decode buffers, xz thread/memory settings, literal skip tables,
-vector candidate filters, dense-candidate fallback, and conservative regex-prefix
-filters are used. RAII restores terminal settings and releases mappings/decoder
-state on normal return and unwinding. Decoder state is boxed at a stable address
+vector candidate filters, dense-candidate fallback, required-literal extraction,
+threaded search pieces, and decoder writer thread are used. RAII restores
+terminal settings and releases mappings/decoder state on normal return and
+unwinding. Decoder state is boxed at a stable address
 and dropped before its borrowed buffers/mappings. Sources must stay stable while
 mapped; external in-place truncation can still cause SIGBUS.
 

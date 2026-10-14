@@ -17,6 +17,7 @@ LESS='-i' ./fastless huge.log
 Builds with GCC or Clang and links zlib, libzstd, and liblzma. `pkg-config`
 provides their compiler/linker flags, with standard library names as a fallback.
 Requires a 64-bit process and POSIX `REG_STARTEND` support (Linux and macOS).
+Each source file compiles separately, so `make -j` builds in parallel.
 
 ```sh
 # Debian / Ubuntu build dependencies
@@ -32,11 +33,13 @@ Homebrew formula details: [pkgconf](https://formulae.brew.sh/formula/pkgconf),
 [zstd](https://formulae.brew.sh/formula/zstd),
 [xz](https://formulae.brew.sh/formula/xz).
 
-`make check` runs the Python 3 integration suite, including a sparse 200 GiB
+`make check` (or `make -j check`) runs the Python 3 integration suite, including a sparse 200 GiB
 file, real pseudo-terminal output, compressed streams, and cancellation cleanup.
 It also compares AVX2 and portable literal kernels against a bytewise reference,
 including inaccessible page boundaries, all byte values, overlapping matches,
-and both search directions. Pager integration runs with SIMD auto and off.
+and both search directions. Pager integration runs with SIMD auto and off,
+and again with a build using tiny search pieces so that the small test files
+exercise the threaded search.
 Python 3 tests use its gzip/lzma modules and libzstd via ctypes (libzstd 1.4+).
 The optional threaded-xz fixture also uses the `xz` executable if installed.
 Linux has been tested locally; macOS still needs a native build/test run.
@@ -91,9 +94,15 @@ Decoding finishes before the first page or search is available, including when
 bytes. Terminal stderr shows decoding progress; Ctrl-C cancels it. No pipes or
 external decoder processes are used by fastless itself.
 
-The native C decoders feed an 8 MiB output buffer directly into the temporary
-file, with compressed input accessed through mmap. xz decoding automatically
-uses up to 32 logical CPUs; `--threads N` selects 1–256, or 0 for automatic.
+Searches reaching more than 8 MiB from their starting point are divided among
+threads in 4 MiB pieces; the first match in file order is still the one
+reported. A regex or glob is first reduced to the longest literal every match
+must contain, and only lines holding it are matched in full.
+
+The native C decoders fill 8 MiB output buffers that a writer thread appends to
+the temporary file, with compressed input accessed through mmap. Searching and
+xz decoding automatically use up to 32 logical CPUs; `--threads N` selects
+1–256, or 0 for automatic.
 liblzma 5.4+ supports the threaded decoder; older versions use a single thread.
 Parallel decoding requires xz blocks with size metadata, usually produced by a
 threaded encoder; single-block files stay single-threaded. See the
@@ -126,15 +135,17 @@ An empty search prompt reuses the current pattern.
   case insensitive and backward searches. Boundary matches are retained.
 * **Glob:** matches the **whole line**. `*` matches any number of bytes, `?`
   matches one byte, and backslash quotes the next character. For a substring
-  search, use `*text*`; simple `*literal*` patterns use the fast literal matcher.
+  search, use `*text*`; simple `*literal*` patterns use the fast literal matcher,
+  and other patterns are only matched on lines holding their longest literal run.
   Bracket classes are not supported. No line allocation.
 * **Regex:** POSIX ERE, such as `^ERROR.*timeout`, without PCRE extensions.
   Uses `REG_STARTEND` against the mapping, without copying lines. A single
   line over 2 GiB produces an error; use literal or glob mode for such a line.
-  Plain literal regexes use the fast matcher within each line. A conservative
-  required-literal-prefix filter skips regex calls where possible; alternation,
-  repetition of the prefix's last character, and ambiguous syntax retain the
-  full regex path.
+  Plain literal regexes use the fast matcher within each line. Otherwise the
+  longest top-level literal run that every match must contain is found with
+  the fast matcher, and the regex runs only on lines containing it. Alternation
+  disables this, and characters followed by `*`, `+`, `?`, or `{` are not part
+  of a run; patterns without a usable run use the full regex path.
 
 `LESS` option clusters such as `-FRiX` are inspected for `-i` and `-I`;
 other LESS features are not implemented. `-i` ignores case only when the
@@ -238,7 +249,7 @@ are specific to this data and warm cache; they are not storage-speed guarantees.
 
 Literal mode is the preferred path for maximum throughput. Regex mode must
 identify each line and call the platform regex engine; complex patterns can
-be much slower. Backward regex search finds the final match on each candidate
+be much slower, though long searches use several threads. Backward regex search finds the final match on each candidate
 line and can be expensive on lines with many matches. Glob wildcard patterns
 and case insensitive literal patterns can also have unfavorable worst cases.
 Ctrl-C is checked between work units; an individual regex-engine call or a
@@ -248,8 +259,14 @@ The mapping reserves virtual address space equal to the file size, while the
 OS loads pages on demand. A cold search still reads the scanned bytes from
 storage; mmap does not remove that I/O cost. Resident memory and page tables
 can grow as the OS caches scanned pages. Heap use is independent of file size,
-apart from regex-engine internal allocations. No parallel search, persistent
-index, or speculative whole-file prefetch is performed.
+apart from regex-engine internal allocations and a regex copy per search
+thread. No persistent index or speculative whole-file prefetch is performed.
+
+Threads help most with regex and glob patterns that have no usable literal; on
+the local 8-core Ryzen, such a regex ran about 6.7 times faster with eight
+threads. Literal-speed scans roughly double before memory bandwidth limits them,
+and threads beyond the physical core count added nothing. `--threads 1` keeps
+searches on the calling thread. See [PERFORMANCE.md](PERFORMANCE.md).
 
 Keep the mapped file stable while viewing it. In-place truncation can cause
 `SIGBUS`, as with other mmap readers. Replacing its pathname does not update

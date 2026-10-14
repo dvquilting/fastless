@@ -1,5 +1,7 @@
 use std::process::Command;
 fn main() {
+    // Test builds shrink the multi-threaded search pieces with this cfg.
+    println!("cargo:rustc-check-cfg=cfg(fastless_tiny_pieces)");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG");
     let tool = std::env::var("PKG_CONFIG").unwrap_or_else(|_| "pkg-config".into());

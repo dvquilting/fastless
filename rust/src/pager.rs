@@ -57,6 +57,12 @@ fn dimensions() -> (usize, usize) {
 }
 fn key() -> i32 {
     loop {
+        match signals::wait_for_input() {
+            Ok(true) => (),
+            Ok(false) => return 0,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return -1,
+        }
         let mut byte = 0u8;
         let n = unsafe { libc::read(0, (&mut byte as *mut u8).cast(), 1) };
         if n == 1 {
@@ -64,9 +70,6 @@ fn key() -> i32 {
         }
         if n == 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
             return -1;
-        }
-        if signals::cancelled() || signals::resized() {
-            return 0;
         }
     }
 }
@@ -150,13 +153,14 @@ fn draw(
         .map_err(|e| e.to_string())?;
     Ok(p)
 }
-fn prompt(rows: usize, prefix: u8) -> Option<Vec<u8>> {
+fn prompt(rows: &mut usize, prefix: u8) -> Option<Vec<u8>> {
     let mut text = Vec::new();
     loop {
+        let row = *rows;
         let mut out = io::stdout();
         let _ = write!(
             out,
-            "\x1b[{rows};1H\x1b[2K{}{}",
+            "\x1b[{row};1H\x1b[2K{}{}",
             prefix as char,
             String::from_utf8_lossy(&text)
         );
@@ -165,8 +169,12 @@ fn prompt(rows: usize, prefix: u8) -> Option<Vec<u8>> {
         if c == 13 || c == 10 {
             return Some(text);
         }
-        if c == 27 || c < 0 || signals::cancelled() {
+        if c == 27 || c < 0 || signals::cancelled() || signals::exiting() != 0 {
             return None;
+        }
+        if signals::resized() {
+            signals::clear_resized();
+            *rows = dimensions().0;
         }
         if c == 127 || c == 8 {
             text.pop();
@@ -193,7 +201,7 @@ pub fn run(
             break;
         }
         signals::clear();
-        let (rows, cols) = dimensions();
+        let (mut rows, cols) = dimensions();
         let page_end = draw(data, top, current.as_ref(), mode, &message, rows, cols)?;
         let c = key();
         if c < 0 || c == b'q' as i32 || signals::exiting() != 0 {
@@ -263,7 +271,7 @@ pub fn run(
             b'/' | b'?' | b'n' | b'N' => {
                 let fresh = c == b'/' as i32 || c == b'?' as i32;
                 if fresh {
-                    let Some(input) = prompt(rows, c as u8) else {
+                    let Some(input) = prompt(&mut rows, c as u8) else {
                         continue;
                     };
                     if !input.is_empty() {

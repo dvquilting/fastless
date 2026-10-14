@@ -13,6 +13,7 @@
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+#include <pthread.h>
 #include <zlib.h>
 #include <zstd.h>
 #include <lzma.h>
@@ -31,6 +32,15 @@ typedef struct {
     const char *format;
     bool progress;
     struct timespec last_update;
+    /* Writer thread: decoding continues into `buffer` while `pending` is
+       written out. Everything below is guarded by `lock`. */
+    bool threaded, stop;
+    pthread_t writer;
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    unsigned char *pending, *spare;
+    size_t pending_length;
+    int write_error; /* errno of a failed write, or -1 for a zero-length one */
 } Decoder;
 
 static int failure(Decoder *d, const char *message) {
@@ -42,22 +52,69 @@ static bool cancelled(Decoder *d) {
     failure(d, "Decompression interrupted");
     return true;
 }
+static int write_failure(Decoder *d, int error) {
+    char message[192];
+    snprintf(message, sizeof(message), "Temporary-file write failed: %s",
+             error > 0 ? strerror(error) : "zero-length write");
+    return failure(d, message);
+}
+/* Returns 0, or the failure code described at write_error. Stops quietly on
+   cancellation, which the decoding thread reports. */
+static int write_all(Decoder *d, const unsigned char *buffer, size_t length) {
+    size_t pos = 0;
+    while (pos < length && !*d->cancel) {
+        ssize_t n = write(d->fd, buffer + pos, length - pos);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return n ? errno : -1;
+        pos += (size_t)n;
+    }
+    return 0;
+}
+static void *writer_main(void *arg) {
+    Decoder *d = arg;
+    pthread_mutex_lock(&d->lock);
+    for (;;) {
+        while (!d->pending && !d->stop) pthread_cond_wait(&d->changed, &d->lock);
+        if (!d->pending) break;
+        unsigned char *buffer = d->pending;
+        size_t length = d->pending_length;
+        pthread_mutex_unlock(&d->lock);
+        int error = write_all(d, buffer, length);
+        pthread_mutex_lock(&d->lock);
+        if (error && !d->write_error) d->write_error = error;
+        d->spare = buffer;
+        d->pending = NULL;
+        pthread_cond_broadcast(&d->changed);
+    }
+    pthread_mutex_unlock(&d->lock);
+    return NULL;
+}
+/* Waits for the writer to finish what it holds and returns its status. */
+static int writer_idle(Decoder *d) {
+    while (d->pending) pthread_cond_wait(&d->changed, &d->lock);
+    return d->write_error;
+}
 static int write_output(Decoder *d, size_t length, size_t consumed) {
     if (length > SIZE_MAX - d->written ||
         (uintmax_t)d->written + length > INT64_MAX)
         return failure(d, "Decompressed file exceeds address/file size limits");
-    size_t pos = 0;
-    while (pos < length) {
-        if (cancelled(d)) return -1;
-        ssize_t n = write(d->fd, d->buffer + pos, length - pos);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) {
-            char message[192];
-            snprintf(message, sizeof(message), "Temporary-file write failed: %s", n ? strerror(errno) : "zero-length write");
-            return failure(d, message);
+    if (cancelled(d)) return -1;
+    int error = 0;
+    if (!d->threaded) error = write_all(d, d->buffer, length);
+    else if (length) {
+        /* Hand the full buffer to the writer and decode on into the other. */
+        pthread_mutex_lock(&d->lock);
+        error = writer_idle(d);
+        if (!error) {
+            d->pending = d->buffer;
+            d->pending_length = length;
+            d->buffer = d->spare;
+            pthread_cond_broadcast(&d->changed);
         }
-        pos += (size_t)n;
+        pthread_mutex_unlock(&d->lock);
     }
+    if (error) return write_failure(d, error);
+    if (cancelled(d)) return -1;
     d->written += length;
     if (d->progress) {
         struct timespec now;
@@ -261,6 +318,11 @@ int input_open(InputFile *file, const char *path, Compression compression,
     free(name);
     d.buffer = malloc(BUFFER_SIZE);
     if (!d.buffer) { failure(&d, "Cannot allocate decompression buffer"); goto done; }
+    /* Without a second buffer or a thread, writes simply stay on this thread. */
+    d.spare = malloc(BUFFER_SIZE);
+    pthread_mutex_init(&d.lock, NULL);
+    pthread_cond_init(&d.changed, NULL);
+    d.threaded = d.spare && !pthread_create(&d.writer, NULL, writer_main, &d);
     if (!threads) {
         long cpus = sysconf(_SC_NPROCESSORS_ONLN);
         threads = cpus > 0 ? (unsigned)(cpus > 32 ? 32 : cpus) : 1;
@@ -270,6 +332,16 @@ int input_open(InputFile *file, const char *path, Compression compression,
     clock_gettime(CLOCK_MONOTONIC, &d.last_update);
     int rc = compression == COMP_GZIP ? decode_gzip(&d, source, length) :
              compression == COMP_ZSTD ? decode_zstd(&d, source, length) : decode_xz(&d, source, length, threads);
+    if (d.threaded) {
+        pthread_mutex_lock(&d.lock);
+        int error = writer_idle(&d);
+        d.stop = true;
+        pthread_cond_broadcast(&d.changed);
+        pthread_mutex_unlock(&d.lock);
+        pthread_join(d.writer, NULL);
+        d.threaded = false;
+        if (!rc && error) rc = write_failure(&d, error);
+    }
     if (d.progress) fputs("\r\033[K", stderr);
     if (rc || cancelled(&d)) goto done;
     const unsigned char *mapped = d.written ? mmap(NULL, d.written, PROT_READ, MAP_PRIVATE, d.fd, 0) : (const unsigned char *)"";
@@ -280,5 +352,6 @@ done:
     if (length) munmap((void *)source, length);
     if (d.fd >= 0) close(d.fd);
     free(d.buffer);
+    free(d.spare);
     return result;
 }
