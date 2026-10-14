@@ -18,7 +18,8 @@ fn usage() {
         "Usage: fastless-rs [--regex|--literal|--glob] [-i|-I|--case-sensitive] FILE\n\
             fastless-rs [options] --find PATTERN [--all] [--offset BYTE] FILE\n\
 Search: POSIX extended regex (default), literal bytes, or whole-line glob (* ? \\).\n\
-Keys: Space/f page, b previous page, j/k line, g/G start/end, / and ? search,\n\
+Keys: Space/f page, b previous page, j/k line, d/u half page, g/< or ESC-< start,\n\
+      G/> or ESC-> end, arrow/Page/Home/End keys, / and ? search,\n\
       n/N repeat/reverse, r/l/w regex/literal/glob mode, q quit.\n\
 LESS -i/-I supplies smart/always ignore-case defaults; CLI options override.\n\
 --compression auto|none|gzip|zstd|xz: detect/force format (default: auto).\n\

@@ -123,6 +123,32 @@ with tempfile.TemporaryDirectory() as tmp:
     os.close(master)
     os.close(slave)
     checks += 1
+    # less-style navigation keys on a 6-row terminal: 5 text rows of 8-byte lines.
+    path.write_bytes(b''.join(b'line%03d\n' % i for i in range(100)))
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 6, 120, 0, 0))
+    original = termios.tcgetattr(slave)
+    child = subprocess.Popen([EXE, *SIMD_FLAGS, str(path)], stdin=slave, stdout=slave,
+                             stderr=slave, env=dict(os.environ, LESS=''))
+    until(b'byte 0/800')
+    last_page = 95 * 8
+    for keys, top in [(b'\x1b>', last_page), (b'\x1b<', 0), (b'>', last_page), (b'<', 0),
+                      (b'\x1b[B', 8), (b'\x1b[A', 0), (b'\x1bOB', 8), (b'y', 0), (b'e', 8),
+                      (b'\x10', 0), (b'\x0e', 8), (b'\x0b', 0), (b'\x05', 8), (b'\x19', 0),
+                      (b'\x1b[6~', 40), (b'\x1b[5~', 0), (b'\x1b ', 40), (b'\x1bv', 0),
+                      (b'\x06', 40), (b'\x02', 0), (b'z', 40), (b'\x16', 80),
+                      (b'd', 96), (b'u', 80), (b'\x04', 96), (b'\x15', 80),
+                      (b'\x1b[F', last_page), (b'\x1b[H', 0), (b'\x1b[4~', last_page),
+                      (b'\x1b[1~', 0), (b'\x1bOF', last_page), (b'\x1bOH', 0),
+                      (b'\x1b[1;5B', 8), (b'\x1bxj', 16), (b'\x1b[99~j', 24)]:
+        os.write(master, keys)
+        until(b'byte %d/800' % top)
+        checks += 1
+    os.write(master, b'Q')
+    assert child.wait(timeout=5) == 0
+    assert termios.tcgetattr(slave) == original
+    os.close(master)
+    os.close(slave)
     # Differential reverse-search checks exercise skip-table shifts and overlaps.
     buf = b'abcabca aaaa aaab abcABC abcabca abca aaaa aaa aaabc'
     path.write_bytes(buf)

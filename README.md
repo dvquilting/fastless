@@ -165,24 +165,32 @@ locale: case folding is ASCII, not Unicode. Files and patterns are bytes.
 
 | Key | Action |
 | --- | --- |
-| Space / `f` | Next page |
-| `b` | Previous page |
-| `j` / Enter | Next line |
-| `k` | Previous line |
-| `g` / `G` | Beginning / last page |
+| Space / `f` / `z` / Ctrl-F / Ctrl-V / ESC-Space / Page Down | Next page |
+| `b` / Ctrl-B / ESC-`v` / Page Up | Previous page |
+| `j` / `e` / Enter / Ctrl-E / Ctrl-N / Down | Next line |
+| `k` / `y` / Ctrl-Y / Ctrl-P / Ctrl-K / Up | Previous line |
+| `d` / Ctrl-D | Forward half a page |
+| `u` / Ctrl-U | Back half a page |
+| `g` / `<` / ESC-`<` / Home | Beginning |
+| `G` / `>` / ESC-`>` / End | Last page |
 | `/` / `?` | Forward / backward search |
 | `n` / `N` | Repeat / reverse search |
 | `r` / `l` / `w` | Regex / literal / glob |
-| `q` | Quit |
+| `q` / `Q` | Quit |
 | Ctrl-C | Cancel search |
+
+The alternative keys follow less. ESC-`<` means Escape followed by `<`; Alt-`<`
+works in terminals that send Alt as an Escape prefix. Numeric prefixes (such as
+`50p`) and less's `w` window command are not implemented; `w` selects glob mode.
 
 Long lines are clipped to terminal width; there is no horizontal scrolling.
 Tabs expand to eight-column stops. Non-ASCII and control bytes display as
 `.` so file contents cannot inject terminal escape sequences. No UTF-8
 rendering, stdin/pipe input, follow mode, or line numbers.
 The pager uses the alternate screen and restores terminal settings on exit.
-Patterns entered interactively are limited to 4095 ASCII bytes. Arrow keys
-and job-control suspension are not implemented; use the navigation keys above.
+Patterns entered interactively are limited to 4095 ASCII bytes; the search
+prompt has no line editing beyond Backspace, and Escape cancels it. Job-control
+suspension is not implemented.
 
 ## Noninteractive searches
 

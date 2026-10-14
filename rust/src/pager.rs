@@ -17,10 +17,22 @@ impl Terminal {
             return Err(io::Error::last_os_error().to_string());
         }
         let mut raw = saved;
-        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+        // IEXTEN off keeps Ctrl-V and Ctrl-O for the pager on BSD and macOS.
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::IEXTEN);
         raw.c_iflag &= !(libc::IXON | libc::ICRNL);
         raw.c_cc[libc::VMIN] = 1;
         raw.c_cc[libc::VTIME] = 0;
+        // Ctrl-Y scrolls instead of suspending.
+        #[cfg(any(
+            target_vendor = "apple",
+            target_os = "freebsd",
+            target_os = "dragonfly",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        ))]
+        {
+            raw.c_cc[libc::VDSUSP] = libc::_POSIX_VDISABLE;
+        }
         if unsafe { libc::tcsetattr(0, libc::TCSAFLUSH, &raw) } != 0 {
             return Err(io::Error::last_os_error().to_string());
         }
@@ -71,6 +83,70 @@ fn key() -> i32 {
         if n == 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
             return -1;
         }
+    }
+}
+/// Reads one command, translating less's alternative keys, ESC sequences and
+/// terminal cursor keys to the pager's own f b j k d u g G q. Unknown escape
+/// sequences become 0, which only redraws.
+fn command() -> i32 {
+    let c = key();
+    // Control keys: ^F ^V, ^B, ^E ^N, ^Y ^P ^K, ^D, ^U.
+    let alias = match u8::try_from(c) {
+        Ok(b'z' | 0x06 | 0x16) => b'f',
+        Ok(0x02) => b'b',
+        Ok(b'e' | 0x05 | 0x0e) => b'j',
+        Ok(b'y' | 0x19 | 0x10 | 0x0b) => b'k',
+        Ok(0x04) => b'd',
+        Ok(0x15) => b'u',
+        Ok(b'<') => b'g',
+        Ok(b'>') => b'G',
+        Ok(b'Q') => b'q',
+        Ok(27) => return escape(),
+        _ => return c,
+    };
+    alias as i32
+}
+fn escape() -> i32 {
+    let mut c = key();
+    match u8::try_from(c) {
+        Ok(b'<') => return b'g' as i32,
+        Ok(b'>') => return b'G' as i32,
+        Ok(b' ') => return b'f' as i32,
+        Ok(b'v') => return b'b' as i32,
+        // SS3 cursor keys: ESC O A
+        Ok(b'O') => c = key(),
+        // CSI: ESC [ parameters final
+        Ok(b'[') => {
+            let (mut param, mut first) = (0, true);
+            loop {
+                c = key();
+                match u8::try_from(c) {
+                    Ok(b';') => first = false,
+                    Ok(d @ b'0'..=b'9') if first && param < 1000 => {
+                        param = param * 10 + i32::from(d - b'0')
+                    }
+                    Ok(0x20..=0x3f) => (),
+                    _ => break,
+                }
+            }
+            if c == b'~' as i32 {
+                return match param {
+                    1 | 7 => b'g' as i32,
+                    4 | 8 => b'G' as i32,
+                    5 => b'b' as i32,
+                    6 => b'f' as i32,
+                    _ => 0,
+                };
+            }
+        }
+        _ => return c.min(0),
+    }
+    match u8::try_from(c) {
+        Ok(b'A') => b'k' as i32,
+        Ok(b'B') => b'j' as i32,
+        Ok(b'H') => b'g' as i32,
+        Ok(b'F') => b'G' as i32,
+        _ => c.min(0),
     }
 }
 fn draw(
@@ -203,7 +279,7 @@ pub fn run(
         signals::clear();
         let (mut rows, cols) = dimensions();
         let page_end = draw(data, top, current.as_ref(), mode, &message, rows, cols)?;
-        let c = key();
+        let c = command();
         if c < 0 || c == b'q' as i32 || signals::exiting() != 0 {
             break;
         }
@@ -229,6 +305,21 @@ pub fn run(
             }
             b'k' => {
                 top = search::previous_line(data, top);
+                last_hit = None;
+            }
+            b'd' => {
+                for _ in 0..(rows - 1) / 2 {
+                    let p = search::next_line(data, top);
+                    if p < data.len() {
+                        top = p;
+                    }
+                }
+                last_hit = None;
+            }
+            b'u' => {
+                for _ in 0..(rows - 1) / 2 {
+                    top = search::previous_line(data, top);
+                }
                 last_hit = None;
             }
             b'g' => {

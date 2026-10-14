@@ -580,6 +580,43 @@ static int key(void) {
         if (!n || (n < 0 && errno != EINTR)) return -1;
     }
 }
+#define KEY_CTRL(c) ((c) & 0x1f)
+/* Reads one command, translating less's alternative keys, ESC sequences and
+   terminal cursor keys to the pager's own f b j k d u g G q. Unknown escape
+   sequences become 0, which only redraws. */
+static int command(void) {
+    int c = key();
+    switch (c) {
+    case 'z': case KEY_CTRL('F'): case KEY_CTRL('V'): return 'f';
+    case KEY_CTRL('B'): return 'b';
+    case 'e': case KEY_CTRL('E'): case KEY_CTRL('N'): return 'j';
+    case 'y': case KEY_CTRL('Y'): case KEY_CTRL('P'): case KEY_CTRL('K'): return 'k';
+    case KEY_CTRL('D'): return 'd';
+    case KEY_CTRL('U'): return 'u';
+    case '<': return 'g';
+    case '>': return 'G';
+    case 'Q': return 'q';
+    case 27: break;
+    default: return c;
+    }
+    c = key();
+    if (c == '<') return 'g';
+    if (c == '>') return 'G';
+    if (c == ' ') return 'f';
+    if (c == 'v') return 'b';
+    if (c == 'O') c = key(); /* SS3 cursor keys: ESC O A */
+    else if (c == '[') {     /* CSI: ESC [ parameters final */
+        int param = 0;
+        bool first = true;
+        while ((c = key()) >= 0x20 && c < 0x40) {
+            if (c == ';') first = false;
+            else if (first && c >= '0' && c <= '9' && param < 1000) param = param * 10 + c - '0';
+        }
+        if (c == '~') return param == 1 || param == 7 ? 'g' : param == 4 || param == 8 ? 'G' :
+                             param == 5 ? 'b' : param == 6 ? 'f' : 0;
+    } else return c < 0 ? c : 0;
+    return c == 'A' ? 'k' : c == 'B' ? 'j' : c == 'H' ? 'g' : c == 'F' ? 'G' : c < 0 ? c : 0;
+}
 static bool prompt(char *out, size_t cap, int *rows, char prefix) {
     size_t n = 0;
     for (;;) {
@@ -597,7 +634,8 @@ static void usage(FILE *out) {
     fputs("Usage: fastless [--regex|--literal|--glob] [-i|-I|--case-sensitive] FILE\n"
           "       fastless [options] --find PATTERN [--all] [--offset BYTE] FILE\n"
           "Search: POSIX extended regex (default), literal bytes, or whole-line glob (* ? \\).\n"
-          "Keys: Space/f next page, b previous page, j/k line, g/G start/end,\n"
+          "Keys: Space/f next page, b previous page, j/k line, d/u half page,\n"
+          "      g/< or ESC-< start, G/> or ESC-> end; arrow, Page and Home/End keys,\n"
           "      / forward search, ? backward search, n/N repeat/reverse,\n"
           "      r/l/w regex/literal/glob mode, q quit. Ctrl-C cancels a search.\n"
           "-i: ignore ASCII case for lowercase patterns; -I: always ignore case.\n"
@@ -715,9 +753,13 @@ int main(int argc, char **argv) {
     }
     if (tcgetattr(STDIN_FILENO, &saved)) { perror("tcgetattr"); result = 2; goto done; }
     struct termios term = saved;
-    term.c_lflag &= (tcflag_t)~(ICANON | ECHO);
+    /* IEXTEN off keeps Ctrl-V and Ctrl-O for the pager on BSD and macOS. */
+    term.c_lflag &= (tcflag_t)~(ICANON | ECHO | IEXTEN);
     term.c_iflag &= (tcflag_t)~(IXON | ICRNL);
     term.c_cc[VMIN] = 1; term.c_cc[VTIME] = 0;
+#ifdef VDSUSP
+    term.c_cc[VDSUSP] = _POSIX_VDISABLE; /* Ctrl-Y scrolls instead of suspending */
+#endif
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &term)) { perror("tcsetattr"); result = 2; goto done; }
     raw = true; atexit(restore);
     fputs("\033[?1049h", stdout);
@@ -730,12 +772,16 @@ int main(int argc, char **argv) {
         int rows, cols;
         dimensions(&rows, &cols);
         size_t page_end = draw(top, &s, message, rows, cols);
-        int c = key();
+        int c = command();
         if (c < 0 || c == 'q' || exiting) break;
         if (c == ' ' || c == 'f') { if (page_end < size) top = page_end; have_hit = false; }
         else if (c == 'b') { for (int i = 0; i < rows - 1; ++i) top = previous_line(top); have_hit = false; }
         else if (c == 'j' || c == '\n' || c == '\r') { size_t p = next_line(top); if (p < size) top = p; have_hit = false; }
         else if (c == 'k') { top = previous_line(top); have_hit = false; }
+        else if (c == 'd') {
+            for (int i = 0; i < (rows - 1) / 2; ++i) { size_t p = next_line(top); if (p < size) top = p; }
+            have_hit = false;
+        } else if (c == 'u') { for (int i = 0; i < (rows - 1) / 2; ++i) top = previous_line(top); have_hit = false; }
         else if (c == 'g') { top = 0; have_hit = false; }
         else if (c == 'G') { top = size ? line_start(size - (data[size - 1] == '\n' ? 1 : 0)) : 0; for (int i = 1; i < rows - 1; ++i) top = previous_line(top); have_hit = false; }
         else if (c == 'r' || c == 'l' || c == 'w') {
