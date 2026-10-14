@@ -4,8 +4,29 @@ CARGO ?= cargo
 CARGO_FLAGS ?= --locked
 CFLAGS ?= -O3 -DNDEBUG
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -pthread
-CPPFLAGS += $(shell $(PKG_CONFIG) --cflags zlib libzstd liblzma 2>/dev/null)
-LDLIBS += $(shell $(PKG_CONFIG) --libs zlib libzstd liblzma 2>/dev/null || echo '-lz -lzstd -llzma')
+CMAKE ?= cmake
+
+# gzip input uses the zlib-ng submodule, built as a static zlib-compatible
+# library, when it is checked out and cmake is available. ZLIB=system uses the
+# installed zlib instead; ZLIB=ng requires the submodule. Run `make clean` after
+# switching.
+ZLIB ?= auto
+ifeq ($(ZLIB),auto)
+override ZLIB := $(if $(and $(wildcard zlib-ng/CMakeLists.txt),$(shell command -v $(CMAKE))),ng,system)
+endif
+ZLIB_NG := build/zlib-ng
+ifeq ($(ZLIB),ng)
+ZLIB_LIB := $(ZLIB_NG)/install/lib/libz.a
+ZLIB_PC :=
+CPPFLAGS += -I$(ZLIB_NG)/install/include
+else ifeq ($(ZLIB),system)
+ZLIB_LIB :=
+ZLIB_PC := zlib
+else
+$(error ZLIB must be auto, ng, or system)
+endif
+CPPFLAGS += $(shell $(PKG_CONFIG) --cflags $(ZLIB_PC) libzstd liblzma 2>/dev/null)
+LDLIBS += $(ZLIB_LIB) $(shell $(PKG_CONFIG) --libs $(ZLIB_PC) libzstd liblzma 2>/dev/null || echo '$(if $(ZLIB_PC),-lz) -lzstd -llzma')
 
 fastless: fastless.o input.o literal.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
@@ -24,8 +45,17 @@ fastless-tiny.o: fastless.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) '-DSEARCH_NEAR=((size_t)40)' '-DSEARCH_PIECE=((size_t)24)' -c -o $@ $<
 
 fastless.o fastless-tiny.o: input.h literal.h
-input.o: input.h
+input.o: input.h $(ZLIB_LIB)
 literal.o literal_tests.o: literal.h
+
+$(ZLIB_NG)/install/lib/libz.a:
+	@test -f zlib-ng/CMakeLists.txt || { echo 'zlib-ng submodule missing; run: git submodule update --init' >&2; exit 1; }
+	$(CMAKE) -S zlib-ng -B $(ZLIB_NG) -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=$(CC) \
+		-DZLIB_COMPAT=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF -DWITH_GTEST=OFF \
+		-DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_INSTALL_LIBDIR=lib \
+		-DCMAKE_INSTALL_PREFIX="$(CURDIR)/$(ZLIB_NG)/install"
+	+$(CMAKE) --build $(ZLIB_NG)
+	$(CMAKE) --install $(ZLIB_NG)
 
 check: fastless fastless-tiny literal-tests
 	./literal-tests
@@ -50,5 +80,6 @@ compare: fastless rust
 
 clean:
 	rm -f fastless fastless-tiny literal-tests *.o
+	rm -rf build
 
 .PHONY: check check-rust rust compare clean

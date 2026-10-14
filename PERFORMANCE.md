@@ -8,7 +8,7 @@ The two implementations are close on this machine: Rust was within about 5% of C
 - OS: Linux 7.0.0-31-generic, 64-bit.
 - C: GCC 15.2.0, `-O3 -DNDEBUG -std=c11 -pthread`; runtime SIMD dispatch, no global `-march=native`/`-mavx2`.
 - Rust: rustc 1.95.0; release `opt-level=3`, thin LTO, one codegen unit; runtime SIMD dispatch.
-- Shared native backends: POSIX regex from libc, zlib 1.3.1, libzstd 1.5.7, liblzma 5.8.3.
+- Shared native backends: POSIX regex from libc, zlib 1.3.1, libzstd 1.5.7, liblzma 5.8.3. These tables predate the C build's switch to zlib-ng; see [gzip with zlib-ng](#gzip-with-zlib-ng).
 - 256 MiB input per fixture, match at the end; median of 7 interleaved warm-cache runs after warming/validating every variant.
 - Repetitive log: 1 KiB rows, mostly repeated bytes. Mixed text: varied ASCII log records with services, paths, timestamps, numbers, and messages.
 - Every timed run checks the exact expected byte offset. Compressed timings include complete decode, temporary-file writes, mmap search, and cleanup. Fixture generation is excluded.
@@ -78,6 +78,17 @@ A regex with no extractable literal, `[0-9]+[q]` on a 1 GiB fixture, took 8.99 s
 
 Decoding plus a literal search of a 2 GiB file, C build: zstd 2.71 → 2.08 s, gzip 4.27 → 3.55 s, xz 1.60 → 1.45 s. Rust measured 2.04, 3.54, and 1.43 s. For reference, the `zstd` tool alone decompressed the same file in 1.77 s.
 
+### gzip with zlib-ng
+
+The C build now links zlib-ng 2.3.3 (zlib-compatible mode, static) from a submodule. Decoding plus a literal search of a 2.16 GB log file, median of 5 interleaved warm-cache runs:
+
+| Compression | zlib 1.3.1 | zlib-ng 2.3.3 | Speedup |
+| --- | ---: | ---: | ---: |
+| `gzip -6` (466 MB) | 3.61 s | 2.09 s | 1.73x |
+| `gzip -1` (602 MB) | 3.61 s | 1.99 s | 1.81x |
+
+For reference, `gzip -dc` and `pigz -dc` to `/dev/null` took 3.6–4.3 s and 3.45 s. The Rust build still links the system zlib, so its gzip rows in the tables above remain current; the C gzip rows would be about 1.7x higher.
+
 ## Interpretation
 
 Two changes account for most of the regex and glob gains. A required literal is extracted from each regex or glob, and only lines containing it reach the full matcher. Searches reaching more than 8 MiB from their start are then split into 4 MiB pieces across threads. With a rare literal, every search mode runs at literal-scan speed. The "general" rows above all contain such a literal; patterns with alternation or without any literal still call the regex engine on every line, which is where threads help most.
@@ -86,7 +97,7 @@ Threaded literal scans level off near 16–20 GiB/s after about four threads. Me
 
 On one thread, AVX2 is most useful for case insensitive literal matching, improving it from about 3.3 to 8.3 GiB/s in both versions. Short case sensitive line searches often keep the optimized libc path.
 
-Compressed input gains come from a writer thread that appends decoded buffers to the temporary file while the next buffer is decoded. gzip remains limited by zlib's single-threaded inflate. Full compressed-file opening still pays for decoding and temporary storage; neither SIMD nor search threads remove those costs.
+Compressed input gains come from a writer thread that appends decoded buffers to the temporary file while the next buffer is decoded. gzip remains limited by single-threaded inflate, even with zlib-ng. Full compressed-file opening still pays for decoding and temporary storage; neither SIMD nor search threads remove those costs.
 
 Differences of a few percent should not be treated as a universal language ranking. These are single-machine warm-cache measurements with different compiler pipelines; storage speed, data distribution, pattern selectivity, line lengths, CPU frequency, core count, and compression settings all change the result. A cold search is usually limited by storage. The comparison fixtures are 256 MiB, not full 1–200 GB scans, so process startup is a noticeable share of the threaded times. A sparse 200 GiB integration test verifies addressing without measuring whole-file throughput. No native macOS benchmark has been run.
 
@@ -100,6 +111,7 @@ Differences of a few percent should not be treated as a universal language ranki
 ## Reproduce
 
 ```sh
+git submodule update --init
 make -j
 make rust
 make -j check

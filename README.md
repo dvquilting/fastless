@@ -16,15 +16,22 @@ LESS='-i' ./fastless huge.log
 
 Builds with GCC or Clang and links zlib, libzstd, and liblzma. `pkg-config`
 provides their compiler/linker flags, with standard library names as a fallback.
+For gzip input, the build uses [zlib-ng](https://github.com/zlib-ng/zlib-ng),
+pinned as a git submodule and built with cmake into a static zlib-compatible
+library; it decoded gzip about 1.7x faster than zlib 1.3.1 in local tests.
+Clone with `git clone --recursive`, or run `git submodule update --init` in an
+existing checkout. Without the submodule or cmake, the build falls back to the
+installed zlib; `make ZLIB=system` selects it explicitly and `make ZLIB=ng`
+makes zlib-ng mandatory. Run `make clean` after switching.
 Requires a 64-bit process and POSIX `REG_STARTEND` support (Linux and macOS).
 Each source file compiles separately, so `make -j` builds in parallel.
 
 ```sh
 # Debian / Ubuntu build dependencies
-sudo apt install build-essential pkg-config zlib1g-dev libzstd-dev liblzma-dev
+sudo apt install build-essential pkg-config cmake zlib1g-dev libzstd-dev liblzma-dev
 
 # macOS with Homebrew
-brew install pkgconf zlib zstd xz
+brew install pkgconf cmake zlib zstd xz
 PKG_CONFIG_PATH="$(brew --prefix zlib)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" make PKG_CONFIG=pkgconf
 ```
 
@@ -57,7 +64,7 @@ python3 compare_versions.py --mib 256 --runs 7 --compressed
 ```
 
 Rust requires Rust 1.77+ and the libc crate in addition to the existing native
-codec libraries. See [rust/README.md](rust/README.md) for build details and
+codec libraries. It links the installed zlib, not the zlib-ng submodule. See [rust/README.md](rust/README.md) for build details and
 [PERFORMANCE.md](PERFORMANCE.md) for the measured comparison and its limitations.
 The Rust implementation does not link the C pager or scanner; both versions
 use the same POSIX regex and compression libraries through their native APIs.
