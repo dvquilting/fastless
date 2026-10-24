@@ -323,7 +323,9 @@ POSIX extended regular expressions, matched within each line without its
 newline.
 The longest run of plain characters that every match must contain is looked
 for first, with the fast literal matcher, and the expression runs only on the
-lines that hold it.
+lines that hold it; for alternatives such as
+.BR timeout|refused ,
+a run from each alternative is looked for.
 A single line longer than 2\ GiB cannot be matched by a regular expression.
 .TP
 .BR Literal " (" \-\-literal )

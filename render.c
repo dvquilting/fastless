@@ -163,9 +163,29 @@ static void glyph_at(size_t q, size_t end, int col, Glyph *g) {
         g->attr = attr;
     }
 }
+/* How many of the (at most `most`) bytes from q are plain printable ASCII,
+   one column each, so that long lines are skipped without building glyphs.
+   A byte followed by a backspace may be overstruck, so the run ends before. */
+static size_t plain_run(size_t q, size_t end, size_t most) {
+    if (end - q < most) most = end - q;
+    size_t n = 0;
+    /* Eight bytes at a time: none below 0x20 (subtracting 0x20 borrows into
+       the top bit) and none above 0x7E (adding 1 reaches it). */
+    const uint64_t ones = UINT64_C(0x0101010101010101), high = UINT64_C(0x8080808080808080);
+    for (; most - n >= 8; n += 8) {
+        uint64_t x;
+        memcpy(&x, data + q + n, 8);
+        if (((x - 0x20 * ones) | x | (x + ones)) & high) break;
+    }
+    while (n < most && data[q + n] >= 0x20 && data[q + n] < 0x7F) ++n;
+    if (n && q + n < end && data[q + n] == '\b') --n;
+    return n;
+}
 int column_of(size_t begin, size_t end, size_t pos) {
     int col = 0;
     for (size_t q = begin; q < end && q < pos;) {
+        size_t n = plain_run(q, end, (pos - q < (size_t)(INT32_MAX / 2 - col)) ? pos - q : (size_t)(INT32_MAX / 2 - col));
+        if (n) { col += (int)n; q += n; continue; }
         Glyph g;
         glyph_at(q, end, col, &g);
         if (g.next > pos) break;
@@ -177,6 +197,10 @@ int column_of(size_t begin, size_t end, size_t pos) {
 int line_width(size_t begin, size_t end, size_t limit) {
     int col = 0;
     for (size_t q = begin; q < end && q - begin < limit && col < INT32_MAX / 2;) {
+        size_t most = limit - (q - begin);
+        if (most > (size_t)(INT32_MAX / 2 - col)) most = (size_t)(INT32_MAX / 2 - col);
+        size_t n = plain_run(q, end, most);
+        if (n) { col += (int)n; q += n; continue; }
         Glyph g;
         glyph_at(q, end, col, &g);
         col += g.width;
@@ -223,7 +247,7 @@ static void emit(Painter *p, const Glyph *g, int attr) {
 }
 typedef struct {
     size_t header_end, body_start, visible_end;
-    int header_width, pad, body_width;
+    int header_width, pad, body_width, body_col; /* body_col: column at body_start */
     bool truncated;
 } Layout;
 static void layout(const LineRequest *r, int width, Layout *l) {
@@ -242,11 +266,14 @@ static void layout(const LineRequest *r, int width, Layout *l) {
     /* Skip shifted columns; a wide glyph cut by the edge leaves blanks. */
     int left = header + r->shift;
     while (q < r->end && col < left) {
+        size_t n = plain_run(q, r->end, (size_t)(left - col));
+        if (n) { col += (int)n; q += n; continue; }
         Glyph g;
         glyph_at(q, r->end, col, &g);
         col += g.width; q = g.next;
     }
     l->body_start = q;
+    l->body_col = col;
     l->pad = col > left ? col - left : 0;
     int room = width - header;
     int used = l->pad;
@@ -308,13 +335,19 @@ int render_line(FILE *out, const LineRequest *r) {
         paint(&p, r->line_attr);
         for (; used < header; ++used) putc(' ', out);
     }
-    /* Colors set in the hidden part still apply to what is shown. */
-    for (size_t q = l.header_end; q < l.body_start;) {
-        Glyph g;
-        glyph_at(q, r->end, col, &g);
-        if (g.kind == G_SGR) file_color(&p, g.from, g.to);
-        col += g.width; q = g.next;
-    }
+    /* Colors set in the hidden part still apply to what is shown. Each
+       begins with an ESC, which no other glyph contains. */
+    if (render.raw_color)
+        for (size_t q = l.header_end; q < l.body_start;) {
+            const unsigned char *esc = memchr(data + q, 0x1B, l.body_start - q);
+            if (!esc) break;
+            q = (size_t)(esc - data);
+            Glyph g;
+            basic_glyph(q, r->end, 0, &g);
+            if (g.kind == G_SGR && g.next <= l.body_start) file_color(&p, g.from, g.to);
+            q = g.kind == G_SGR ? g.next : q + 1;
+        }
+    col = l.body_col;
     paint(&p, r->line_attr);
     for (int i = 0; i < l.pad; ++i) putc(' ', out);
     used += l.pad;

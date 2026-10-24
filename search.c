@@ -69,6 +69,8 @@ void clear_search(Search *s) {
     if (s->compiled) regfree(&s->re);
     free(s->text);
     free(s->literal);
+    for (size_t i = 0; i < s->alt_count; ++i) free(s->alts[i].text);
+    free(s->alts);
     memset(s, 0, sizeof(*s));
 }
 /* Longest literal that every match of the regex must contain: a run of
@@ -136,17 +138,142 @@ static bool glob_required(const char *text, size_t len, size_t *from, size_t *to
     *only = runs == 1 && !other && *from > 0 && *to < len;
     return best > 0;
 }
-/* Makes text[from..to), with backslash escapes removed, the fast literal. */
-static bool set_literal(Search *s, const char *text, size_t from, size_t to) {
+/* text[from..to) with backslash escapes removed, in *length bytes. */
+static char *unescape(const char *text, size_t from, size_t to, size_t *length) {
+    char *out = malloc(to - from);
+    if (!out) return NULL;
     size_t n = 0;
-    s->literal = malloc(to - from);
-    if (!s->literal) return false;
     for (size_t i = from; i < to; ++i) {
         if (text[i] == '\\' && i + 1 < to) ++i;
-        s->literal[n++] = text[i];
+        out[n++] = text[i];
     }
+    *length = n;
+    return out;
+}
+/* Makes text[from..to), with backslash escapes removed, the fast literal. */
+static bool set_literal(Search *s, const char *text, size_t from, size_t to) {
+    size_t n;
+    if (!(s->literal = unescape(text, from, to, &n))) return false;
     literal_init(&s->fast, s->literal, n, s->fold);
     return true;
+}
+/* For a regex such as "timeout|refused", the literal each top-level
+   alternative must contain. False, leaving none, when there is no top-level
+   alternation, too many alternatives, or one without a literal. */
+static bool set_alternatives(Search *s, const char *text, size_t len) {
+    size_t bars[SEARCH_ALTERNATIVES], count = 0, depth = 0;
+    for (size_t i = 0; i < len; ++i) {
+        if (text[i] == '\\') ++i;
+        else if (text[i] == '(') ++depth;
+        else if (text[i] == ')' && depth) --depth;
+        else if (text[i] == '[') {
+            /* Skip a bracket expression, whose first ']' is literal. */
+            size_t j = i + 1;
+            if (j < len && text[j] == '^') ++j;
+            if (j < len && text[j] == ']') ++j;
+            while (j < len && text[j] != ']') {
+                if (text[j] == '[' && j + 1 < len && strchr(":.=", text[j + 1])) {
+                    char kind = text[j + 1];
+                    j += 2;
+                    while (j + 1 < len && !(text[j] == kind && text[j + 1] == ']')) ++j;
+                    j += 2;
+                } else ++j;
+            }
+            i = j;
+        } else if (text[i] == '|' && !depth) {
+            if (count == SEARCH_ALTERNATIVES - 1) return false;
+            bars[count++] = i;
+        }
+    }
+    if (!count) return false;
+    Alternative *alts = calloc(count + 1, sizeof(*alts));
+    if (!alts) return false;
+    size_t n = 0;
+    for (size_t k = 0; k <= count; ++k) {
+        size_t a = k ? bars[k - 1] + 1 : 0, b = k < count ? bars[k] : len, from, to, length;
+        if (!regex_required(text + a, b - a, &from, &to) ||
+            !(alts[n].text = unescape(text + a, from, to, &length)))
+            break;
+        literal_init(&alts[n].fast, alts[n].text, length, s->fold);
+        ++n;
+    }
+    if (n <= count) {
+        for (size_t k = 0; k < n; ++k) free(alts[k].text);
+        free(alts);
+        return false;
+    }
+    s->alts = alts;
+    s->alt_count = n;
+    return true;
+}
+/* Where each alternative's literal was last looked for during one scan:
+   `found` is its first occurrence from where the scan was (SIZE_MAX:
+   none), and `edge` how far it is known not to occur otherwise. So the bytes
+   are searched once per alternative, however often the scan asks. */
+typedef struct { size_t found, edge; } Lookout;
+static void lookout_reset(Lookout *look, size_t count, size_t edge) {
+    for (size_t i = 0; i < count; ++i) look[i] = (Lookout){SIZE_MAX, edge};
+}
+/* The first position in [at, limit) where a literal that every match
+   contains begins, or SIZE_MAX. Alternatives are searched in windows that
+   double from a small one, and only as far as the nearest found, so a rare
+   alternative costs no more than the distance to the next match. */
+static size_t next_required(const Search *s, size_t at, size_t limit, Lookout *look) {
+    if (!s->alt_count) {
+        const unsigned char *q = literal_find(&s->fast, data + at, limit - at, &interrupted);
+        return q ? (size_t)(q - data) : SIZE_MAX;
+    }
+    size_t best = SIZE_MAX;
+    for (size_t i = 0; i < s->alt_count; ++i) {
+        if (look[i].found != SIZE_MAX && look[i].found < at) look[i] = (Lookout){SIZE_MAX, at};
+        if (look[i].edge < at) look[i].edge = at;
+        if (look[i].found != SIZE_MAX && look[i].found < best) best = look[i].found;
+    }
+    for (size_t window = 4096;; window = window < ((size_t)64 << 20) ? window * 2 : window) {
+        size_t horizon = best != SIZE_MAX ? best : limit - at > window ? at + window : limit;
+        for (size_t i = 0; i < s->alt_count && !interrupted; ++i) {
+            Lookout *l = &look[i];
+            if (l->found != SIZE_MAX || l->edge >= horizon) continue;
+            /* Occurrences starting before the horizon may end after it. */
+            size_t len = s->alts[i].fast.len, end = limit - horizon > len - 1 ? horizon + len - 1 : limit;
+            const unsigned char *q = literal_find(&s->alts[i].fast, data + l->edge, end - l->edge, &interrupted);
+            if (q) {
+                l->found = (size_t)(q - data);
+                if (l->found < best) best = horizon = l->found;
+            } else l->edge = horizon;
+        }
+        if (best != SIZE_MAX || horizon >= limit || interrupted) return best;
+    }
+}
+/* The same backward: the last such position in [floor, before), or
+   SIZE_MAX; `found` is the last occurrence before where the scan was and
+   `edge` how far back it is known not to occur otherwise. */
+static size_t previous_required(const Search *s, size_t floor, size_t before, Lookout *look) {
+    if (!s->alt_count) {
+        const unsigned char *q = literal_reverse(&s->fast, data + floor, size - floor,
+                                                 before - floor, &interrupted);
+        return q ? (size_t)(q - data) : SIZE_MAX;
+    }
+    size_t best = SIZE_MAX;
+    for (size_t i = 0; i < s->alt_count; ++i) {
+        if (look[i].found != SIZE_MAX && look[i].found >= before) look[i] = (Lookout){SIZE_MAX, before};
+        if (look[i].edge > before) look[i].edge = before;
+        if (look[i].found != SIZE_MAX && (best == SIZE_MAX || look[i].found > best)) best = look[i].found;
+    }
+    for (size_t window = 4096;; window = window < ((size_t)64 << 20) ? window * 2 : window) {
+        size_t horizon = best != SIZE_MAX ? best + 1 : before - floor > window ? before - window : floor;
+        for (size_t i = 0; i < s->alt_count && !interrupted; ++i) {
+            Lookout *l = &look[i];
+            if (l->found != SIZE_MAX || l->edge <= horizon) continue;
+            const unsigned char *q = literal_reverse(&s->alts[i].fast, data + horizon, size - horizon,
+                                                     l->edge - horizon, &interrupted);
+            if (q) {
+                l->found = (size_t)(q - data);
+                if (best == SIZE_MAX || l->found > best) { best = l->found; horizon = best + 1; }
+            } else l->edge = horizon;
+        }
+        if (best != SIZE_MAX || horizon <= floor || interrupted) return best;
+    }
 }
 bool set_search(Search *s, Mode mode, const char *text, int case_mode, int subpattern,
                 char *error, size_t cap) {
@@ -177,7 +304,7 @@ bool set_search(Search *s, Mode mode, const char *text, int case_mode, int subpa
             n.required = true;
             n.regex_prefix = from == (text[0] == '^' ? 1u : 0u);
             n.regex_literal = from == 0 && to == n.len;
-        }
+        } else set_alternatives(&n, text, n.len);
     } else if (mode == LITERAL) {
         literal_init(&n.fast, n.text, n.len, n.fold);
     } else {
@@ -224,14 +351,15 @@ static int forward_scan(const Search *s, size_t start, size_t limit,
         return interrupted ? -1 : 0;
     }
     size_t at = start;
+    Lookout ahead[SEARCH_ALTERNATIVES];
+    lookout_reset(ahead, s->alt_count, start);
     while (at <= limit) {
         if (interrupted) return -1;
         /* The literal every match must contain (never a newline) is searched
            for across the whole range, so lines without it are not visited. */
-        if (s->required) {
-            const unsigned char *q = literal_find(&s->fast, data + at, limit - at, &interrupted);
-            if (!q) break;
-            at = (size_t)(q - data);
+        if (s->required || s->alt_count) {
+            at = next_required(s, at, limit, ahead);
+            if (at == SIZE_MAX) break;
         }
         size_t p, end;
         line_bounds(at, &p, &end);
@@ -286,6 +414,8 @@ static int backward_scan(const Search *s, size_t before, size_t floor,
         return interrupted ? -1 : 0;
     }
     size_t p, end;
+    Lookout behind[SEARCH_ALTERNATIVES];
+    lookout_reset(behind, s->alt_count, before);
     line_bounds(before - 1, &p, &end);
     while (p >= floor) {
         size_t cursor = p, best = 0;
@@ -302,12 +432,10 @@ static int backward_scan(const Search *s, size_t before, size_t floor,
         if (found) { *hit = best; return 1; }
         if (p <= floor) break;
         size_t earlier = p - 1;
-        if (s->required) {
+        if (s->required || s->alt_count) {
             /* Skip straight back to the nearest line holding the literal. */
-            const unsigned char *q = literal_reverse(&s->fast, data + floor, size - floor,
-                                                     p - floor, &interrupted);
-            if (!q) break;
-            earlier = (size_t)(q - data);
+            earlier = previous_required(s, floor, p, behind);
+            if (earlier == SIZE_MAX) break;
         }
         line_bounds(earlier, &p, &end);
     }
@@ -317,15 +445,22 @@ static int backward_scan(const Search *s, size_t before, size_t floor,
    or, for line-based modes, the matches on lines starting in it, so pieces
    can be searched independently and their results ordered by position.
    `first` marks the piece at the search start, which may begin mid-line. */
-static int forward_piece(const Search *s, size_t a, size_t b, size_t limit, bool first,
-                         size_t *hit, char *error, size_t cap) {
+static bool piece_bounds(const Search *s, size_t a, size_t b, size_t limit, bool first,
+                         size_t *low, size_t *high) {
     if (s->mode == LITERAL || s->regex_literal) {
         if (limit - b > s->fast.len - 1) limit = b + s->fast.len - 1;
-        return forward_scan(s, a, limit, hit, error, cap);
+        *low = a; *high = limit;
+        return true;
     }
     if (!first && a && data[a - 1] != '\n') a = next_line(a);
     if (b < limit) { b = line_end(b - 1); if (b > limit) b = limit; }
-    return a > b ? 0 : forward_scan(s, a, b, hit, error, cap);
+    *low = a; *high = b;
+    return a <= b;
+}
+static int forward_piece(const Search *s, size_t a, size_t b, size_t limit, bool first,
+                         size_t *hit, char *error, size_t cap) {
+    size_t low, high;
+    return piece_bounds(s, a, b, limit, first, &low, &high) ? forward_scan(s, low, high, hit, error, cap) : 0;
 }
 static int backward_piece(const Search *s, size_t a, size_t b, size_t before,
                           size_t *hit, char *error, size_t cap) {
@@ -426,6 +561,107 @@ int search_backward(const Search *s, size_t before, size_t *hit, char *error, si
         return backward_scan(s, before, 0, hit, error, cap);
     int rc = backward_piece(s, before - SEARCH_NEAR, before, before, hit, error, cap);
     return rc ? rc : search_pieces(s, false, 0, before - SEARCH_NEAR, before, hit, error, cap);
+}
+/* Every match in [low, high), in order: as many as a search from each match
+   onward finds, from the next byte, or the next line for globs. Returns 1
+   once a match is found, 0, or -1 with the error. */
+static int all_in(const Search *s, size_t low, size_t high, size_t **hits, size_t *count,
+                  size_t *room, char *error, size_t cap) {
+    int found = 0;
+    for (size_t at = low; at <= high;) {
+        size_t hit;
+        int rc = forward_scan(s, at, high, &hit, error, cap);
+        if (rc <= 0) return rc < 0 ? -1 : found;
+        if (*count == *room) {
+            size_t grown = *room ? *room * 2 : 1024;
+            size_t *more = realloc(*hits, grown * sizeof(*more));
+            if (!more) { snprintf(error, cap, "Out of memory"); return -1; }
+            *hits = more;
+            *room = grown;
+        }
+        (*hits)[(*count)++] = hit;
+        found = 1;
+        if (hit == size) break;
+        at = s->mode == GLOB ? next_line(hit) : hit + 1;
+        if (s->mode == GLOB && at == size) break;
+    }
+    return found;
+}
+typedef struct {
+    const Search *s;
+    size_t start, limit, first, count; /* pieces first..first+count-1 of [start, limit) */
+    atomic_size_t next;
+    struct { size_t *hits, count, room; int rc; char error[256]; } *pieces;
+} AllJob;
+/* As in search_run, each started thread (`copy`) compiles its own regex,
+   because glibc serializes regexec on one compiled pattern. */
+static void all_run(AllJob *job, bool copy) {
+    Search local = *job->s;
+    bool own = copy && local.mode == REGEX && !local.regex_literal &&
+               !regcomp(&local.re, local.text, REG_EXTENDED | (local.fold ? REG_ICASE : 0));
+    if (!own) local.re = job->s->re;
+    for (;;) {
+        size_t i = atomic_fetch_add(&job->next, 1);
+        if (i >= job->count || interrupted) break;
+        size_t k = job->first + i, a = job->start + k * SEARCH_PIECE, low, high;
+        size_t b = job->limit - a > SEARCH_PIECE ? a + SEARCH_PIECE : job->limit;
+        if (!piece_bounds(&local, a, b, job->limit, k == 0, &low, &high)) continue;
+        job->pieces[i].rc = all_in(&local, low, high, &job->pieces[i].hits, &job->pieces[i].count,
+                                   &job->pieces[i].room, job->pieces[i].error,
+                                   sizeof(job->pieces[i].error));
+    }
+    if (own) regfree(&local.re);
+}
+static void *all_worker(void *arg) {
+    all_run(arg, true);
+    return NULL;
+}
+int search_all(const Search *s, size_t start, size_t limit, int (*emit)(void *, size_t),
+               void *context, char *error, size_t cap) {
+    if (start > limit || limit > size) return 0;
+    size_t total = (limit - start) / SEARCH_PIECE + ((limit - start) % SEARCH_PIECE != 0);
+    if (!total) total = 1;
+    /* Pieces are searched a window at a time, which bounds the matches held. */
+    size_t window = 2 * (size_t)(search_threads ? search_threads : 1);
+    AllJob job = {.s = s, .start = start, .limit = limit};
+    job.pieces = calloc(window, sizeof(*job.pieces));
+    if (!job.pieces) { snprintf(error, cap, "Out of memory"); return -1; }
+    pthread_attr_t attr;
+    bool sized = !pthread_attr_init(&attr);
+    if (sized && pthread_attr_setstacksize(&attr, SEARCH_STACK)) {
+        pthread_attr_destroy(&attr);
+        sized = false;
+    }
+    int result = 0;
+    for (size_t first = 0; first < total && result >= 0; first += window) {
+        job.first = first;
+        job.count = total - first < window ? total - first : window;
+        for (size_t i = 0; i < job.count; ++i) { job.pieces[i].count = 0; job.pieces[i].rc = 0; }
+        atomic_init(&job.next, 0);
+        pthread_t threads[256];
+        unsigned started = 0;
+        while (started + 1 < search_threads && started + 1 < job.count &&
+               !pthread_create(&threads[started], sized ? &attr : NULL, all_worker, &job)) ++started;
+        all_run(&job, false);
+        for (unsigned i = 0; i < started; ++i) pthread_join(threads[i], NULL);
+        if (interrupted) { result = -1; break; }
+        for (size_t i = 0; i < job.count && result >= 0; ++i) {
+            for (size_t j = 0; j < job.pieces[i].count; ++j) {
+                result = 1;
+                if (emit(context, job.pieces[i].hits[j])) { result = 2; break; }
+            }
+            if (result == 2) break;
+            if (job.pieces[i].rc < 0) {
+                snprintf(error, cap, "%s", job.pieces[i].error);
+                result = -1;
+            }
+        }
+        if (result == 2) break;
+    }
+    if (sized) pthread_attr_destroy(&attr);
+    for (size_t i = 0; i < window; ++i) free(job.pieces[i].hits);
+    free(job.pieces);
+    return result == 2 ? 1 : result;
 }
 int line_matches(const Search *s, size_t begin, size_t end) {
     size_t hit;

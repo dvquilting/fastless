@@ -229,7 +229,8 @@ external decoder processes are used by fastless itself.
 
 Searches reaching more than 8 MiB from their starting point are divided among
 threads in 4 MiB pieces; the first match in file order is still the one
-reported. A regex or glob is first reduced to the longest literal every match
+reported. `--find --all` also searches the whole range on every thread and
+prints the matches in order. A regex or glob is first reduced to the longest literal every match
 must contain, and only lines holding it are matched in full.
 
 The native C decoders write directly into the in-memory output, with compressed
@@ -242,8 +243,8 @@ Parallel decoding requires xz blocks with size metadata, usually produced by a
 threaded encoder; single-block files stay single-threaded. See the
 [liblzma decoder documentation](https://tukaani.org/xz/liblzma-api/container_8h.html).
 gzip and standard zstd streams are decoded with one decoder thread. xz limits
-thread buffering to 256 MiB and decoder memory to 512 MiB, reducing threads when
-necessary. zstd uses its library's default maximum window (128 MiB). These limits
+thread buffering to a sixteenth of RAM (from 256 MiB to 2 GiB) and decoder
+memory to 512 MiB, reducing threads when necessary. zstd uses its library's default maximum window (128 MiB). These limits
 are independent of decoded file size; unusually large dictionaries/windows may
 be rejected. OS page caching and mapped pages are additional memory use.
 
@@ -309,9 +310,11 @@ cancels the search still running.
   line over 2 GiB produces an error; use literal or glob mode for such a line.
   Plain literal regexes use the fast matcher within each line. Otherwise the
   longest top-level literal run that every match must contain is found with
-  the fast matcher, and the regex runs only on lines containing it. Alternation
-  disables this, and characters followed by `*`, `+`, `?`, or `{` are not part
-  of a run; patterns without a usable run use the full regex path.
+  the fast matcher, and the regex runs only on lines containing it. For
+  top-level alternatives such as `timeout|refused` (up to eight), each
+  alternative's run is looked for, and lines holding any of them are matched.
+  Characters followed by `*`, `+`, `?`, or `{` are not part of a run; patterns
+  without a usable run use the full regex path.
 
 `-i` ignores case only when the pattern contains no ASCII uppercase letters
 (less's smart-case behavior). `-I` always ignores case; `--case-sensitive`

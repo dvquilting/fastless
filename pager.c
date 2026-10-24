@@ -2569,6 +2569,21 @@ int pager_cat(char **names, int count) {
     if (fflush(stdout)) status = 2;
     return status;
 }
+/* Decimal offsets for --find --all, buffered. */
+typedef struct { char buffer[1 << 16]; size_t used; bool failed; } Offsets;
+static int print_offset(void *context, size_t offset) {
+    Offsets *out = context;
+    if (out->used > sizeof(out->buffer) - 24) {
+        if (fwrite(out->buffer, 1, out->used, stdout) != out->used) { out->failed = true; return 1; }
+        out->used = 0;
+    }
+    char digits[24];
+    size_t n = 0;
+    do digits[n++] = (char)('0' + offset % 10); while (offset /= 10);
+    while (n) out->buffer[out->used++] = digits[--n];
+    out->buffer[out->used++] = '\n';
+    return 0;
+}
 int pager_find(char **names, int count) {
     if (count != 1) { fputs("Specify exactly one file\n", stderr); return 2; }
     secure = getenv("LESSSECURE") && !strcmp(getenv("LESSSECURE"), "1");
@@ -2595,6 +2610,18 @@ int pager_find(char **names, int count) {
     size = in.size;
     int result = 1;
     size_t offset = opt.offset;
+    if (opt.all) {
+        /* Every match, found on all threads and printed in order. */
+        Offsets out = {.used = 0};
+        int rc = search_all(&s, offset <= size ? offset : size, size, print_offset, &out, error, sizeof(error));
+        if (!out.failed && out.used && fwrite(out.buffer, 1, out.used, stdout) != out.used) out.failed = true;
+        if (rc < 0 && !out.failed) {
+            fprintf(stderr, "%s\n", interrupted ? "Search interrupted" : error);
+            result = interrupted ? (exiting ? 128 + exiting : 130) : 2;
+        } else if (rc > 0) result = 0;
+        if (out.failed) result = 2;
+        offset = SIZE_MAX;
+    }
     while (offset <= size) {
         size_t hit;
         int rc = search_forward(&s, offset, size, &hit, error, sizeof(error));

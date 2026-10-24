@@ -9,6 +9,9 @@
 /* No line index and no whole-file heap allocation. All positions are bytes
    in the current document, data[0..size). */
 typedef enum { REGEX, LITERAL, GLOB } Mode;
+/* A literal that one alternative of a regex must contain. */
+typedef struct { char *text; Literal fast; } Alternative;
+#define SEARCH_ALTERNATIVES 8
 typedef struct {
     Mode mode;
     char *text;
@@ -16,6 +19,10 @@ typedef struct {
     Literal fast;
     char *literal; /* owned text of `fast` when it is not the whole pattern */
     bool required, regex_prefix, regex_literal, glob_contains;
+    /* For a regex of top-level alternatives that each contain a literal:
+       every match contains one of these. */
+    Alternative *alts;
+    size_t alt_count;
     bool fold, compiled;
     int subpattern; /* regex group a match must include, as for less's ^S; 0: whole match */
     regex_t re;
@@ -40,6 +47,13 @@ bool set_search(Search *s, Mode mode, const char *text, int case_mode, int subpa
 int search_forward(const Search *s, size_t start, size_t limit,
                    size_t *hit, char *error, size_t cap);
 int search_backward(const Search *s, size_t before, size_t *hit, char *error, size_t cap);
+/* Calls emit with every match in [start, limit) in order, as repeated
+   search_forward calls would find them, starting each after the last match
+   (at the next line for globs); emit returns nonzero to stop. Uses every
+   search thread. Returns 1 if anything matched, 0, or -1 (error or
+   cancellation). */
+int search_all(const Search *s, size_t start, size_t limit, int (*emit)(void *, size_t),
+               void *context, char *error, size_t cap);
 /* Whether a match starts on the line [begin, end). */
 int line_matches(const Search *s, size_t begin, size_t end);
 /* The first line at or after the line start `from` (or the last before

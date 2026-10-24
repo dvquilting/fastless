@@ -56,6 +56,19 @@ with tempfile.TemporaryDirectory() as tmp:
     for pattern in ('abc*', 'abc?', 'abc{0,2}', 'abc+?', 'abc+*', '^abc+?'):
         run(path, pattern, '--regex', options=('--all',), expected=[0, 3, 9])
     run(path, 'abc|no', '--regex', options=('--all',), expected=[3, 9, 20])
+    # Top-level alternatives are prefiltered by their literals; grouping the
+    # same pattern turns that off without changing its matches.
+    rng = random.Random(3)
+    words = [b'cat', b'dog', b'catalog', b'dogma', b'bird', b'x|y', b'c[a]t', b'ab', b'zz', b'Cat']
+    alt = pathlib.Path(tmp) / 'alternatives'
+    alt.write_bytes(b''.join(b' '.join(rng.choice(words) for _ in range(rng.randint(0, 6))) + b'\n'
+                             for _ in range(3000)))
+    for pattern in ('cat|dog', 'dogma|bird|zz', '^cat|dog$', 'c[a]t|do+g', 'x\\|y|bird',
+                    '[|]y|ab', 'cat(alog|x)|zz', 'a|b|c|d|e|f|g|h', 'ca*t|bi.d', 'q|cat'):
+        for extra in ((), ('-i',)):
+            plain = run(alt, pattern, '--regex', options=('--all', *extra))
+            grouped = run(alt, f'({pattern})', '--regex', options=('--all', *extra))
+            assert plain == grouped and plain, (pattern, extra, len(plain), len(grouped))
     run(path, '^abc.*needle$', '--regex', expected=[9])
     run(path, '^abc$', '--regex', expected=[], code=1)
     run(path, 'abc.*needle', '--regex', options=('--offset', '10'), expected=[], code=1)

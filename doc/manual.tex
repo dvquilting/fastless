@@ -337,7 +337,8 @@ text under the new rules. A regex or glob is not run on every line: \fl{} first
 works out the longest run of plain characters that every match must contain,
 finds the lines holding it with the literal matcher, and runs the full pattern
 only on those. For \cmd{\caret ERROR.*timeout}, only lines containing
-\cmd{ERROR} are examined. Alternation (\cmd{|}) turns this off.
+\cmd{ERROR} are examined. For alternatives such as \cmd{timeout|refused}, a run
+from each alternative is looked for, and only lines holding one are examined.
 
 \begin{note}[Tip]
 For the fastest searches of very large files, use literal mode, and give a

@@ -356,6 +356,15 @@ def run(tmp):
     p.expect_status('/ab\r', 'Pattern not found')
     p.expect_status('g/tar\r', 'Match at byte 100')
     p.quit()
+    # Alternatives are found in both directions, and n repeats past each.
+    p = Pager([str(hundred)])
+    p.wait(ready)
+    p.expect_top('/line042|line017\r', 17 * 8)
+    p.expect_top('n', 42 * 8)
+    p.expect_top('G?line042|line017|line093\r', 42 * 8)
+    p.expect_top('n', 17 * 8)
+    p.expect_status('n', 'Pattern not found')
+    p.quit()
     # Header lines from a later line stay while scrolling; searches can skip them.
     p = Pager(['--header=2,0,11', '--no-search-header-lines', str(hundred)])
     p.wait(ready)
@@ -398,6 +407,15 @@ def run(tmp):
     p.expect_row('', 6, 'red plain')
     assert b'\x1b[31mred\x1b[0m' in p.screen.raw
     assert 'color' in p.screen.style[6][0]
+    p.quit()
+    # Shifted out of view, a color code still applies, and tabs keep their
+    # columns.
+    shifted = root / 'shifted'
+    shifted.write_bytes(b'\x1b[31mabcdefghij\tX\x1b[0m\n')
+    p = Pager(['-R', '-#3', str(shifted)])
+    p.wait(ready)
+    p.expect_row('\x1b)', 0, 'defghij      X')
+    assert 'color' in p.screen.style[0][0]
     p.quit()
     p = Pager(['-x4,10', str(chars)])
     p.wait(ready)

@@ -478,7 +478,15 @@ static int decode_xz(Decoder *d, const unsigned char *source, size_t length, uns
         options.flags = flags;
         options.threads = threads;
         options.timeout = 100; /* Poll cancellation while worker threads decode. */
-        options.memlimit_threading = 256 * MIB;
+        /* Each thread buffers a block: about 33 MiB for xz -6 and 260 MiB for
+           -9. A sixteenth of RAM, from 256 MiB to 2 GiB, lets threaded -6
+           files use 16 threads; liblzma uses fewer threads beyond it. */
+        long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
+        uint64_t ram = pages > 0 && page > 0 ? (uint64_t)pages * (uint64_t)page : 0;
+        uint64_t limit = ram / 16;
+        if (limit < 256 * MIB) limit = 256 * MIB;
+        if (limit > 2048 * MIB) limit = 2048 * MIB;
+        options.memlimit_threading = limit;
         options.memlimit_stop = 512 * MIB;
         rc = lzma_stream_decoder_mt(&z, &options);
     } else
@@ -1059,9 +1067,16 @@ done:
 int input_open(InputFile *file, const char *path, const InputConfig *c,
                char *error, size_t error_size) {
     *file = (InputFile){.fd = -1};
-    int fd = open(path, O_RDONLY | O_NONBLOCK);
-    if (fd < 0) { snprintf(error, error_size, "%s: %s", path, strerror(errno)); return -1; }
+    /* Opening a FIFO waits for a writer, as less does; anything else opens
+       without blocking. A FIFO is opened only once: a brief extra reader
+       would let a writer finish before the real one starts, and the pipe's
+       data would be lost with it. */
     struct stat st;
+    bool fifo = !stat(path, &st) && S_ISFIFO(st.st_mode);
+    int fd;
+    do fd = open(path, fifo ? O_RDONLY : O_RDONLY | O_NONBLOCK);
+    while (fd < 0 && errno == EINTR && fifo && !*c->cancel);
+    if (fd < 0) { snprintf(error, error_size, "%s: %s", path, strerror(errno)); return -1; }
     if (fstat(fd, &st)) {
         snprintf(error, error_size, "fstat: %s", strerror(errno)); close(fd); return -1;
     }
@@ -1073,17 +1088,9 @@ int input_open(InputFile *file, const char *path, const InputConfig *c,
             snprintf(error, error_size, "%s is not a regular file (use -f to see it)", path);
             close(fd); return -1;
         }
-        /* Pipes and devices are read as they are viewed. Opening a FIFO
-           without O_NONBLOCK waits for a writer, as less does. */
-        if (S_ISFIFO(st.st_mode)) {
-            close(fd);
-            do fd = open(path, O_RDONLY);
-            while (fd < 0 && errno == EINTR && !*c->cancel);
-            if (fd < 0) { snprintf(error, error_size, "%s: %s", path, strerror(errno)); return -1; }
-        } else {
-            int flags = fcntl(fd, F_GETFL);
-            if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-        }
+        /* Pipes and devices are read as they are viewed. */
+        int flags = fcntl(fd, F_GETFL);
+        if (flags >= 0 && (flags & O_NONBLOCK)) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
         if (c->pass_through) {
             int rc = input_copy(fd, STDOUT_FILENO, path, c, error, error_size);
             close(fd);
