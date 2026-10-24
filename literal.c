@@ -233,3 +233,46 @@ const unsigned char *literal_reverse(const Literal *p, const unsigned char *data
 #endif
     return reverse_portable(p, data, candidates, cancel);
 }
+/* Counting one byte value, used for line numbers. The portable version tests
+   eight bytes at a time: a byte is zero exactly when neither its low seven
+   bits nor its top bit is set. */
+static size_t count_portable(const unsigned char *data, size_t length, unsigned char byte) {
+    const uint64_t low7 = UINT64_C(0x7f7f7f7f7f7f7f7f);
+    const uint64_t pattern = UINT64_C(0x0101010101010101) * byte;
+    size_t total = 0, i = 0;
+    for (; length - i >= 8; i += 8) {
+        uint64_t x;
+        memcpy(&x, data + i, 8);
+        x ^= pattern;
+        total += (size_t)__builtin_popcountll(~(((x & low7) + low7) | x | low7));
+    }
+    for (; i < length; ++i) total += data[i] == byte;
+    return total;
+}
+#if HAVE_AVX2_KERNEL
+/* Byte counters subtract each all-ones comparison result, at most 255 times
+   before they are summed into 64-bit lanes. */
+AVX2_TARGET static size_t count_avx2(const unsigned char *data, size_t length, unsigned char byte) {
+    const __m256i needle = _mm256_set1_epi8((char)byte), zero = _mm256_setzero_si256();
+    size_t total = 0, i = 0;
+    while (length - i >= 32) {
+        size_t blocks = (length - i) / 32;
+        if (blocks > 255) blocks = 255;
+        __m256i counts = zero;
+        for (size_t b = 0; b < blocks; ++b, i += 32) {
+            __m256i v = _mm256_loadu_si256((const __m256i *)(const void *)(data + i));
+            counts = _mm256_sub_epi8(counts, _mm256_cmpeq_epi8(v, needle));
+        }
+        __m256i sums = _mm256_sad_epu8(counts, zero);
+        total += (size_t)_mm256_extract_epi64(sums, 0) + (size_t)_mm256_extract_epi64(sums, 1) +
+                 (size_t)_mm256_extract_epi64(sums, 2) + (size_t)_mm256_extract_epi64(sums, 3);
+    }
+    return total + count_portable(data + i, length - i, byte);
+}
+#endif
+size_t literal_count(const unsigned char *data, size_t length, unsigned char byte) {
+#if HAVE_AVX2_KERNEL
+    if (use_avx2) return count_avx2(data, length, byte);
+#endif
+    return count_portable(data, length, byte);
+}

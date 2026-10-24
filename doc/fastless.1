@@ -1,0 +1,1143 @@
+.\" Manual page for fastless.
+.\" Lint with: groff -man -ww -z doc/fastless.1
+.TH FASTLESS 1 2026-10-23 "fastless 1.0" "User Commands"
+.SH NAME
+fastless \- a less-compatible pager for very large and compressed files
+.SH SYNOPSIS
+.B fastless
+.RI [ options ]
+.RB [ + \fIcmd ]
+.RI [ file ...]
+.br
+.B fastless
+.RI [ options ]
+.B \-\-find
+.I pattern
+.RB [ \-\-all ]
+.RB [ \-\-offset
+.IR byte ]
+.RI [ file ]
+.SH DESCRIPTION
+.B fastless
+is a pager with the commands, options, prompts, and key bindings of
+.BR less (1),
+designed for searching files of one to hundreds of gigabytes.
+Plain files are mapped into memory read-only, never copied, and no line index
+is built, so a 200\ GB file opens at once and costs no memory beyond the pages
+the operating system caches.
+Searches over long distances run on several threads, and literal searches use
+AVX2 instructions where the CPU has them.
+.PP
+gzip, zstd, xz, and bzip2 input is recognised by its first bytes, whatever the
+file is called, and decoded before it is shown: into memory, or into a
+temporary file once it exceeds
+.BR \-\-max\-mem .
+xz and bzip2 decode on several threads, and every integrity check is verified;
+damaged or truncated input is an error, never a partial file.
+.PP
+Without a
+.IR file ,
+or with
+.BR \- ,
+standard input is read, and keys are read from
+.IR /dev/tty .
+Pipes are shown while they are still being written, as in
+.BR less .
+When standard output is not a terminal,
+.B fastless
+copies its input (decoded, if it was compressed) to standard output, as
+.BR cat (1)
+would.
+.PP
+Positions, byte offsets, and percentages always refer to the decoded data.
+Press
+.B h
+in the pager for a summary of the commands.
+.\" ----------------------------------------------------------------------
+.SH COMMANDS
+Commands are those of
+.BR less .
+Those marked with * may be preceded by a number,
+.IR N ,
+typed before the command.
+.B ^X
+means Control-X, and
+.B ESC\-x
+means Escape followed by x.
+.SS Moving
+.TP 22
+.BR SPACE " " f " " ^F " " ^V " " PageDown " *"
+Forward one window, or
+.I N
+lines.
+.TP
+.BR b " " ^B " " ESC\-v " " PageUp " *"
+Backward one window, or
+.I N
+lines.
+.TP
+.BR z " / " w " *"
+Forward / backward one window, setting the window size to
+.IR N .
+.TP
+.BR ESC\-SPACE " *"
+Forward one window, even at the end of the file.
+.TP
+.BR j " " e " " RETURN " " ^E " " ^N " " Down " *"
+Forward one line, or
+.I N
+lines.
+.TP
+.BR k " " y " " ^Y " " ^P " " ^K " " Up " *"
+Backward one line, or
+.I N
+lines.
+.TP
+.BR J " / " K " " Y " *"
+Forward / backward a line, even past either end.
+.TP
+.BR d " " ^D " / " u " " ^U " *"
+Forward / backward half a window, setting the half-window size to
+.IR N .
+.TP
+.BR ESC\-) " " Right " / " ESC\-( " " Left " *"
+Right / left half a screen width, or
+.I N
+columns.
+Long lines are never wrapped, so this is how their ends are seen.
+.TP
+.BR ESC\-} " " ^Right " / " ESC\-{ " " ^Left
+Right to the end of the longest line shown / back to the first column.
+.TP
+.B F
+Forward forever, like
+.BR "tail \-f" ;
+a regular file is remapped as it grows.
+Any key stops following.
+.TP
+.B ESC\-F
+Like
+.BR F ,
+but stop when a match for the search pattern appears.
+.TP
+.BR r " " ^R " " ^L
+Repaint the screen.
+.TP
+.B R
+Repaint, first taking in any growth of the file.
+.SS Jumping
+.TP 22
+.BR g " " < " " ESC\-< " " Home " *"
+First line, or line
+.IR N .
+.TP
+.BR G " " > " " ESC\-> " " End " *"
+Last line, or line
+.IR N .
+.TP
+.BR p " " % " *"
+.I N
+percent into the file; decimals such as
+.B 37.5%
+are allowed.
+.TP
+.BR P " *"
+Byte offset
+.IR N .
+(fastless)
+.TP
+.BR { " " ( " " [ " *"
+Find the bracket closing the first such bracket on the top line.
+.TP
+.BR } " " ) " " ] " *"
+Find the bracket opening the last such bracket on the bottom line.
+.TP
+.BR ESC\-^F " \fIa b\fP / " ESC\-^B " \fIa b\fP"
+The same for any pair of characters
+.I a
+and
+.IR b .
+.TP
+.BI m x \fR\ /\ \fPM x
+Mark the top / bottom line with the letter
+.IR x .
+.TP
+.BI \(aq x \fR\ \ \fP^X^X x
+Go to mark
+.IR x .
+.B \(aq\(aq
+returns to the previous position, and
+.B \(aq^
+and
+.B \(aq$
+are the ends of the file.
+.TP
+.BI ESC\-m x
+Clear mark
+.IR x .
+.SS Searching
+.TP 22
+.BI / pattern " *"
+Search forward for the
+.IR N th
+line containing a match.
+.TP
+.BI ? pattern " *"
+Search backward.
+.TP
+.BR n " / " N " *"
+Repeat the search in the same / the opposite direction.
+.TP
+.BR ESC\-n " / " ESC\-N " *"
+Repeat the search, continuing into the following / preceding files.
+.TP
+.BI & pattern
+Show only the lines that match;
+.B &
+alone shows all lines again.
+.TP
+.BR ESC\-u " / " ESC\-U
+Toggle highlighting of matches / forget the pattern.
+.TP
+.BR ESC\-r " / " ESC\-l " / " ESC\-w
+Switch to regular-expression / literal / glob searching (fastless).
+The current pattern is recompiled for the new mode.
+.SS Files
+.TP 22
+.BR :e " [\fIfile\fP] " ^X^V
+Examine a new file;
+.B :e
+alone rereads the current one.
+.TP
+.BR :n " / " :p " *"
+The next / previous file named on the command line.
+.TP
+.BR :x " *"
+The first (or
+.IR N th)
+file.
+.TP
+.B :d
+Remove the current file from the list.
+.TP
+.BR = " " ^G " " :f
+Show the file name, position, and size.
+.SS Miscellaneous
+.TP 22
+.BI \- x \fR\ \ \fP\-\- name
+Toggle or set an option;
+.BI \-+ x
+resets it and
+.BI \-! x
+sets its opposite.
+.TP
+.BI _ x \fR\ \ \fP__ name
+Show the setting of an option.
+.TP
+.BI + cmd
+Run
+.I cmd
+each time a new file is examined.
+.TP
+.BI ! command
+Run a shell command with
+.BR $SHELL .
+.B %
+is replaced by the file name,
+.B #
+by the previous file, and
+.B !!
+repeats the last command.
+.TP
+.BI # command
+The same, expanding prompt escapes first.
+.TP
+.BI | x\ command
+Pipe the text between mark
+.I x
+(or
+.BR ^ ,
+.BR $ ,
+.BR . )
+and the screen into
+.IR command .
+.TP
+.BI s \ file
+Save the input to
+.IR file :
+the decoded data for compressed input.
+.TP
+.B v
+Edit the file with
+.BR $VISUAL ,
+.BR $EDITOR ,
+or
+.BR vi (1);
+.B LESSEDIT
+is honoured.
+.TP
+.BR h " " H " / " V
+Show the help / the version.
+.TP
+.BR q " " Q " " :q " " :Q " " ZZ
+Quit, or leave the help.
+.TP
+.B ^C
+Cancel a search, count, wait, or
+.BR F .
+.TP
+.B ^Z
+Suspend.
+.PP
+With
+.BR \-\-mouse ,
+the wheel scrolls and a click sets mark
+.BR # .
+.SS Line editing
+Prompts for patterns, file names, and commands have
+.BR less 's
+line editing: Left/Right and
+.BR ESC\-h / ESC\-l ,
+word moves with ^Left/^Right and
+.BR ESC\-b / ESC\-w ,
+Home/End and
+.BR ESC\-0 / ESC\-$ ,
+Delete and
+.BR ESC\-x ,
+word deletion with ESC\-BACKSPACE and
+.BR ESC\-X ,
+.B ^U
+to clear the line,
+.B ^V
+to enter the next character literally, and Up/Down for history, matching what
+was typed.
+BACKSPACE on an empty prompt,
+.BR ^G ,
+or a lone ESC cancels.
+.\" ----------------------------------------------------------------------
+.SH SEARCHING
+There are three search modes.
+.TP
+.BR "Regular expressions" " (" \-\-regex ", the default)"
+POSIX extended regular expressions, matched within each line without its
+newline.
+The longest run of plain characters that every match must contain is looked
+for first, with the fast literal matcher, and the expression runs only on the
+lines that hold it.
+A single line longer than 2\ GiB cannot be matched by a regular expression.
+.TP
+.BR Literal " (" \-\-literal )
+The pattern's bytes, anywhere, including across line ends.
+This is the fastest mode.
+.TP
+.BR Glob " (" \-\-glob )
+A pattern for the whole line, in which
+.B *
+matches any bytes,
+.B ?
+one byte, and
+.B \e
+quotes the next character; use
+.BI * text *
+to find
+.I text
+anywhere in a line.
+Bracket classes are not supported.
+.PP
+A match is reported at its byte offset, and the line holding it is moved to
+the jump target
+.RB ( \-j ,
+the top line by default).
+All visible matches are highlighted, including overlapping ones.
+A new forward search starts at the target line,
+.B \-a
+starts it after the screen and
+.B \-A
+after the target line.
+.PP
+.B \-i
+ignores case when the pattern has no capital letters,
+.B \-I
+always, and
+.B \-\-case\-sensitive
+never.
+Case folding is ASCII only.
+Files and patterns are bytes: a UTF\-8 pattern matches its encoding.
+.PP
+As in
+.BR less ,
+a pattern may begin with modifiers:
+.TP 12
+.BR ^N " or " !
+Find lines that do not match.
+.TP
+.BR ^E " or " *
+Continue through the following (or preceding) files.
+.TP
+.BR ^F " or " @
+Start at the first file (for
+.BR / )
+or the last (for
+.BR ? ).
+.TP
+.B ^K
+Highlight the matches without moving.
+.TP
+.B ^R
+Search literally, for this pattern only.
+.TP
+.BI ^S \ n
+Match parenthesised subexpression
+.I n
+and highlight only it.
+.TP
+.B ^W
+Wrap around to the other end of the file if nothing is found.
+.TP
+.B ^L
+Take the next character literally.
+.PP
+The punctuation forms
+.BR ! ,
+.BR * ,
+and
+.B @
+are modifiers only in regular-expression mode, because glob and literal
+patterns often begin with them.
+.B \-\-search\-options
+sets modifiers for every search.
+.PP
+Searches that reach more than 8\ MiB from where they start are divided among
+threads in 4\ MiB pieces; the first match in file order is still the one
+reported.
+.\" ----------------------------------------------------------------------
+.SH OPTIONS
+Options are read first from the
+.B LESS
+environment variable, then from the command line.
+A long option may be shortened to any unique prefix, and most can also be
+changed inside the pager with the
+.B \-
+command.
+.SS Searching
+.TP
+.BR \-\-regex ", " \-\-literal ", " \-\-glob
+Select the search mode (fastless).
+.TP
+.BR \-i ", " \-\-ignore\-case
+Ignore case in searches whose pattern has no capital letters.
+.TP
+.BR \-I ", " \-\-IGNORE\-CASE
+Ignore case in all searches.
+.TP
+.B \-\-case\-sensitive
+Turn
+.B \-i
+and
+.B \-I
+off (fastless).
+.TP
+.BR \-a ", " \-\-search\-skip\-screen
+Start forward searches after the last line on the screen.
+.TP
+.BR \-A ", " \-\-SEARCH\-SKIP\-SCREEN
+Start forward searches just after the target line.
+.TP
+.BR \-g ", " \-\-hilite\-search
+Highlight only the match found, not every match.
+.TP
+.BR \-G ", " \-\-HILITE\-SEARCH
+Highlight nothing.
+.TP
+.B \-\-incsearch
+Search as the pattern is typed.
+.TP
+.BI \-\-search\-options= letters
+Modifiers applied to every search: any of
+.B EFKNRW
+for ^E, ^F, ^K, ^N, ^R, and ^W;
+.B \-
+clears those before it.
+.TP
+.BI \-p \ pattern \fR,\fP\ \-\-pattern= pattern
+Search for
+.I pattern
+when the first file opens.
+.TP
+.BI \-j \ n \fR,\fP\ \-\-jump\-target= n
+The screen line that jumps and searches put the target on: a line number
+(1 is the top; negative counts from the bottom) or a fraction such as
+.B .5
+for the middle.
+.TP
+.BI \-\-match\-shift= n
+Columns kept to the left of a match that has to be scrolled into view.
+.SS Display
+.TP
+.BR \-R ", " \-\-RAW\-CONTROL\-CHARS ", " \-r ", " \-\-raw\-control\-chars
+Pass ANSI color sequences through.
+.B \-r
+is the same as
+.BR \-R .
+.TP
+.BR \-N ", " \-\-LINE\-NUMBERS
+Show a line number before each line.
+.TP
+.BR \-n ", " \-\-line\-numbers
+Show no line numbers at all, in prompts either.
+.TP
+.BI \-\-line\-num\-width= n
+The width of the line-number column (default 7).
+.TP
+.B \-\-no\-number\-headers
+Do not number header lines.
+.TP
+.BR \-s ", " \-\-squeeze\-blank\-lines
+Show runs of blank lines as one.
+.TP
+.BI \-x \ n\fR[\fP,n\fR...],\fP\ \-\-tabs= n\fR[\fP,n\fR...]\fP
+Tab stops (default 8).
+.TP
+.BR \-~ ", " \-\-tilde
+Do not mark lines after the end of the file with
+.BR ~ .
+.TP
+.BI \-# \ n \fR,\fP\ \-\-shift= n
+Columns to scroll horizontally: a number, a fraction of the screen, or 0 for
+half the screen (the default).
+.TP
+.BI \-\-header= L\fR[\fP,C\fR[\fP,N\fR]]\fP
+Keep
+.I L
+lines, starting at line
+.IR N ,
+at the top of the screen and
+.I C
+columns at the left.
+.TP
+.BR \-\-no\-search\-header\-lines ", " \-\-no\-search\-header\-columns ", " \-\-no\-search\-headers
+Leave the header lines, columns, or both out of searches.
+.TP
+.BR \-J ", " \-\-status\-column
+Show a column marking marks and lines with matches.
+.TP
+.BI \-\-status\-col\-width= n
+The width of that column (default 2).
+.TP
+.B \-\-status\-line
+Highlight whole marked lines.
+.TP
+.BR \-u ", " \-\-underline\-special ", " \-U ", " \-\-UNDERLINE\-SPECIAL
+Show backspaces and carriage returns (and, for
+.BR \-U ,
+tabs) as control characters instead of acting on them.
+.TP
+.BR \-\-proc\-backspace ", " \-\-proc\-return ", " \-\-proc\-tab
+Process that character (overstrike, hide a carriage return before a newline,
+expand tabs) whatever
+.B \-u
+says.
+.TP
+.BR \-\-PROC\-BACKSPACE ", " \-\-PROC\-RETURN ", " \-\-PROC\-TAB
+Show that character as a control character whatever
+.B \-u
+says.
+.TP
+.BI \-\-rscroll= c
+The character marking a chopped line in the last column (default
+.BR > ;
+.B \-
+for none).
+.TP
+.BR \-w ", " \-\-hilite\-unread ", " \-W ", " \-\-HILITE\-UNREAD
+Highlight the first new line after moving forward a page, or after any forward
+movement.
+.TP
+.BR \-m ", " \-\-long\-prompt ", " \-M ", " \-\-LONG\-PROMPT
+Use
+.BR less 's
+medium or long prompt instead of fastless's status line.
+.TP
+.BI \-P prompt \fR,\fP\ \-\-prompt= prompt
+Set a prompt:
+.BI \-Ps ...
+(or no letter) the short one,
+.BR \-Pm ,
+.BR \-PM ,
+.B \-P=
+for the
+.B =
+message,
+.B \-Ph
+for the help screen, and
+.B \-Pw
+for waiting at the end of a pipe.
+See
+.BR PROMPTS .
+.TP
+.BR \-c ", " \-\-clear\-screen ", " \-C ", " \-\-CLEAR\-SCREEN
+Repaint by clearing the screen rather than scrolling.
+.TP
+.BR \-X ", " \-\-no\-init
+Draw on the normal screen, not the terminal's alternate screen.
+.TP
+.B \-\-redraw\-on\-quit
+Leave the final screen on the terminal when quitting.
+.TP
+.BI \-z \ n \fR,\fP\ \-\-window= n
+The window size for scrolling; negative counts back from the screen height.
+.TP
+.BR \-\-mouse ", " \-\-MOUSE
+Scroll with the mouse wheel;
+.B \-\-MOUSE
+reverses the direction.
+.TP
+.BI \-\-wheel\-lines= n
+Lines per wheel step (default 1).
+.SS Quitting and the bell
+.TP
+.BR \-e ", " \-\-quit\-at\-eof
+Quit on a forward command at the end of the file.
+.TP
+.BR \-E ", " \-\-QUIT\-AT\-EOF
+Quit as soon as the end of the file is shown.
+.TP
+.BR \-F ", " \-\-quit\-if\-one\-screen
+Print a file that fits on the screen and exit; a pipe is waited for until it
+is known to fit.
+.TP
+.BR \-K ", " \-\-quit\-on\-intr
+Quit with status 2 on ^C.
+.TP
+.BI \-\-intr= c
+The character that cancels like ^C (default ^X).
+.TP
+.BR \-q ", " \-\-quiet ", " \-\-silent
+Ring the bell only for errors, not for moving past either end.
+.TP
+.BR \-Q ", " \-\-QUIET ", " \-\-SILENT
+Never ring the bell.
+.SS Input
+.TP
+.BI \-\-compression= format
+.BR auto " (the default), " none ", " gzip ", " zstd ", " xz ", or " bzip2 .
+.B none
+shows the bytes as stored (fastless).
+.TP
+.BI \-\-max\-mem= GiB
+Keep decoded or piped input in memory up to this many GiB (default 10, and
+fractions such as
+.B 0.5
+are allowed); beyond it, input goes to a temporary file.
+.B 0
+always uses a file (fastless).
+.TP
+.BI \-\-tmpdir= dir
+Where temporary files go (fastless).
+.TP
+.BI \-\-threads= n
+Threads for searching, counting lines, and decoding xz and bzip2: 1 to 256, or
+0 (the default) for one per CPU, at most 32 (fastless).
+.TP
+.BR \-\-simd= auto | off | avx2
+Whether literal searches use fastless's AVX2 code;
+.B avx2
+is an error on a CPU without it (fastless).
+.TP
+.BR \-f ", " \-\-force
+Open devices and other non-regular files.
+Named pipes need no
+.BR \-f .
+.TP
+.BR \-L ", " \-\-no\-lessopen
+Ignore
+.BR LESSOPEN .
+.TP
+.B \-\-show\-preproc\-errors
+Report an input preprocessor that fails.
+.TP
+.B \-\-follow\-name
+Make
+.B F
+reopen the file by name if it is replaced, as for rotated logs.
+.TP
+.BI \-\-lesskey\-src= file
+Read key bindings from a
+.BR lesskey (1)
+source file.
+.TP
+.BI \-\-lesskey\-content= text
+Key bindings given as lesskey source, with lines separated by newlines or
+semicolons (\fB\e;\fP is a semicolon).
+.TP
+.B \-\-save\-marks
+Keep marks in the history file between sessions.
+.TP
+.B \-\-no\-histdups
+Drop earlier copies of a command from the history.
+.TP
+.BI + cmd
+Run
+.I cmd
+when the first file opens, as in
+.BR +G ,
+.BR +/error ,
+or
+.BR +50% ;
+.BI ++ cmd
+runs it for every file.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.TP
+.BR \-? ", " \-\-help
+Print a summary of the options and exit.
+.SS Noninteractive searching
+.TP
+.BI \-\-find= pattern
+Print the byte offset of the first match and exit, without starting the pager
+(fastless).
+.TP
+.B \-\-all
+With
+.BR \-\-find ,
+print every match, including overlapping ones.
+.TP
+.BI \-\-offset= byte
+Start the search (or the pager) at this byte offset (fastless).
+.SS Accepted without effect
+.BR \-b " (" \-\-buffers ),
+.BR \-B " (" \-\-auto\-buffers ),
+.BR \-d " (" \-\-dumb ),
+.BR \-h " (" \-\-max\-back\-scroll ),
+.BR \-S " (" \-\-chop\-long\-lines ),
+.BR \-y " (" \-\-max\-forw\-scroll ),
+.BR \-\-file\-size ,
+.BR \-\-no\-keypad ,
+.BR \-\-no\-vbell ,
+and
+.B \-\-exit\-follow\-on\-close
+are accepted for compatibility and ignored.
+Lines are always chopped, as with
+.BR \-S .
+.SS Not supported
+.BR \-o ", " \-\-log\-file ", " \-O ", " \-\-LOG\-FILE " (log files),"
+.BR \-t ", " \-\-tag ", " \-T ", " \-\-tag\-file " (tags),"
+.BR \-D ", " \-\-color ", " \-\-use\-color " (colors),"
+.BR \-\-wordwrap ,
+.BR \-\-modelines ,
+.BR \-\(dq ", " \-\-quotes ,
+.BR \-\-use\-backslash ,
+and
+.BR \-k ", " \-\-lesskey\-file " (compiled lesskey files)"
+are rejected with a message.
+In
+.BR LESS ,
+unknown options are ignored.
+.\" ----------------------------------------------------------------------
+.SH PROMPTS
+The default status line is fastless's own: the file name, the position, the
+search mode, and a reminder of the main keys.
+.BR \-m ,
+.BR \-M ,
+and
+.B \-P
+select
+.BR less 's
+prompts and its prompt language: %-escapes such as
+.BR %f " (file name), " %b " (byte offset), " %B " (size), " %p " (percent), " %l " and " %L " (line numbers), " %i " and " %m " (file index and count),"
+.BR %c ", " %d ", " %D ", " %E ", " %F ", " %g ", " %P ", " %s ", " %t ", " %T ", and " %x ,
+and
+.BI ? x ...:...\&.
+conditionals.
+A line-number item shows
+.B ?
+and its condition is false until the number is known.
+.PP
+Line numbers are counted only when something on the screen shows one, with
+SIMD on every search thread, and remembered per 64\ MiB piece.
+A long jump into uncounted data does not wait: the numbers appear once they
+are counted.
+^C during counting turns line numbers off, as in
+.BR less .
+.\" ----------------------------------------------------------------------
+.SH COMPRESSED INPUT
+gzip members, zstd frames (including skippable frames), xz streams, and bzip2
+streams may be concatenated; only zero bytes may follow the last one.
+The whole input is decoded, and its checksums verified, before the first page
+is shown; standard error shows progress, and ^C cancels.
+.PP
+Decoded data is kept in memory until it exceeds
+.BR \-\-max\-mem ,
+then moves to an unlinked temporary file with mode 0600 in
+.BR \-\-tmpdir ,
+.BR $TMPDIR ,
+or
+.IR /tmp .
+There must be room for the whole decoded size, which can be far larger than
+the compressed file.
+.I /tmp
+is often held in memory on Linux; choose a directory on disk for large files.
+Switching to another file releases the decoded data, and returning decodes it
+again.
+.PP
+xz files decode on several threads when they hold several blocks, as threaded
+encoders write them.
+bzip2 decodes on every thread with the block decoder of
+.BR lbzip2 (1).
+gzip and zstd decode on one thread.
+Archive members, such as those of a tar file, are not extracted.
+.\" ----------------------------------------------------------------------
+.SH PIPES AND STANDARD INPUT
+Standard input, named pipes, and devices are read by a background thread and
+paged while they are still being written, so
+.B "make 2>&1 | fastless"
+and
+.B "tail \-f log | fastless"
+show output as it arrives.
+While a stream is being read its size is unknown: the status says
+.BR (reading) ,
+and the prompt conditions
+.BR ?s ", " ?B ", " ?p ", " ?P ", " ?L ", " ?D ", and " ?e
+are false.
+.PP
+Moving past the end waits for more input;
+.BR G ,
+.BR % ,
+and
+.B \(aq$
+follow the end until the input ends; forward searches go on into input as it
+arrives; and jumps past what has arrived wait for it.
+Any key ends the wait.
+Up to
+.B \-\-max\-mem
+(at least 64\ MiB) is read ahead; beyond that, input is read only as far as
+the screen, a search, or a jump needs, so
+.B "yes | fastless"
+does not fill the disk.
+A compressed stream is read whole, then decoded.
+.PP
+A pipe cannot be read twice, so it stays open, with what was read, while
+another file is shown.
+When standard output is not a terminal, a pipe is copied through as it
+arrives and not kept.
+.\" ----------------------------------------------------------------------
+.SH INPUT PREPROCESSORS
+.B LESSOPEN
+and
+.B LESSCLOSE
+work as in
+.BR less :
+.BI | cmd\ %s
+pages the output of
+.I cmd
+(the file itself, if that is empty),
+.BI || cmd\ %s
+treats empty output with status 0 as an empty file, and
+.I cmd\ %s
+prints the name of a replacement file, which
+.B LESSCLOSE
+is later given with the original name.
+Files that begin with gzip, zstd, xz, or bzip2 magic skip the preprocessor,
+because the built-in decoders are faster;
+.B "\-L \-\-compression=none"
+shows their raw bytes.
+.\" ----------------------------------------------------------------------
+.SH KEY BINDINGS
+Keys can be rebound with
+.BR lesskey (1)
+source:
+.BR \-\-lesskey\-src ,
+or else the first of
+.BR $LESSKEYIN ,
+.IR $XDG_CONFIG_HOME/lesskey ,
+.IR ~/.config/lesskey ,
+and
+.IR ~/.lesskey ;
+then
+.B LESSKEY_CONTENT
+and
+.BR \-\-lesskey\-content .
+The
+.BR #command ,
+.BR #line\-edit ,
+and
+.B #env
+sections,
+.BR #stop ,
+.B \ek
+key names, and extra strings work as in
+.BR lesskey .
+Besides
+.BR less 's
+actions, fastless has
+.BR regex\-mode ,
+.BR literal\-mode ,
+and
+.BR glob\-mode ;
+the tag and OSC\ 8 hyperlink actions are accepted but do nothing.
+.\" ----------------------------------------------------------------------
+.SH NONINTERACTIVE SEARCH
+.B \-\-find
+prints the zero-based byte offset of the first match in the decoded file, or
+with
+.B \-\-all
+of every match, one per line, and exits.
+Glob mode prints one offset per matching line.
+.B LESSOPEN
+is not used.
+A pipe is read to its end first.
+.PP
+.EX
+fastless \-\-find \(aq^ERROR.*timeout\(aq huge.log
+fastless \-\-literal \-\-find needle \-\-all huge.log.zst
+fastless \-\-literal \-\-find needle \-\-offset 150000000000 huge.log
+.EE
+.\" ----------------------------------------------------------------------
+.SH ENVIRONMENT
+.TP 18
+.B LESS
+Options read before the command line.
+String values end at
+.BR $ .
+.TP
+.BR LESSOPEN ", " LESSCLOSE
+Input preprocessors.
+.TP
+.B LESSEDIT
+The editor command for
+.BR v ,
+in prompt language (default
+.BR "%E ?lm+%lm. %g" ).
+.TP
+.BR VISUAL ", " EDITOR
+The editor (default
+.BR vi );
+an empty value counts as unset.
+.TP
+.B SHELL
+The shell for
+.BR ! ,
+.BR # ,
+and
+.BR | .
+.TP
+.B LESSSECURE
+When 1, disables shell commands, pipes, saving, editing,
+.BR :e ,
+preprocessors, and history writing.
+.TP
+.B LESSCHARSET
+If set,
+.B utf\-8
+shows text as UTF\-8 and any other value shows bytes above 127 as
+.BI < XX >\fR.\fP
+If not, the locale
+.RB ( LC_ALL ,
+.BR LC_CTYPE ,
+.BR LANG )
+decides.
+.TP
+.BR LESSKEYIN ", " LESSKEY_CONTENT ", " XDG_CONFIG_HOME
+Key bindings; see
+.BR "KEY BINDINGS" .
+.TP
+.B FASTLESSHISTFILE
+The history file (default
+.IR ~/.fastlesshst ;
+.B \-
+for none).
+.TP
+.B TMPDIR
+Temporary files, unless
+.B \-\-tmpdir
+is given.
+.\" ----------------------------------------------------------------------
+.SH FILES
+.TP 18
+.I ~/.fastlesshst
+Search and shell history, and marks with
+.BR \-\-save\-marks .
+.TP
+.IR ~/.lesskey ", " ~/.config/lesskey
+Key bindings in lesskey source form.
+.\" ----------------------------------------------------------------------
+.SH EXIT STATUS
+.TP 6
+.B 0
+Success; for
+.BR \-\-find ,
+a match was found.
+.TP
+.B 1
+.B \-\-find
+found no match.
+.TP
+.B 2
+An error, such as a file that cannot be opened or damaged compressed data, or
+^C with
+.BR \-K .
+.TP
+.B 130
+Interrupted by ^C outside the pager, such as while decoding or during
+.BR \-\-find .
+.TP
+.BI 128+ n
+Ended by signal
+.IR n ,
+such as SIGTERM.
+.\" ----------------------------------------------------------------------
+.SH DIFFERENCES FROM LESS
+fastless follows
+.B less
+668 wherever it can.
+It differs in these ways.
+.SS Additions
+.IP \(bu 3
+Literal and whole-line glob search modes, alongside regular expressions
+.RB ( \-\-literal ,
+.BR \-\-glob ,
+.BR ESC\-r ", " ESC\-l ", " ESC\-w ).
+.IP \(bu
+Built-in, multithreaded gzip, zstd, xz, and bzip2 decoding, chosen by content
+rather than by file name, with
+.BR \-\-compression ,
+.BR \-\-max\-mem ,
+and
+.BR \-\-tmpdir .
+.IP \(bu
+Threaded searches and line counting
+.RB ( \-\-threads )
+and AVX2 literal matching
+.RB ( \-\-simd ).
+.IP \(bu
+.BR \-\-find ,
+.BR \-\-all ,
+and
+.B \-\-offset
+for searching without the pager, and
+.B P
+to jump to a byte offset.
+.IP \(bu
+Its own default status line, with the file, position, and search mode.
+.SS Behaviour
+.IP \(bu 3
+Long lines are always chopped and never wrapped:
+.B \-S
+is the only behaviour, and
+.B \-\-wordwrap
+is not supported.
+.IP \(bu
+Line numbers are counted lazily, only when shown, and a long jump does not
+wait for them;
+.B less
+counts lines as it reads.
+.IP \(bu
+Literal searches match across line ends.
+Regular expressions are POSIX extended expressions from the C library, matched
+in the C locale, so case folding is ASCII only.
+.IP \(bu
+Search positions and the status line count bytes in the decoded data.
+.IP \(bu
+Compressed files bypass
+.BR LESSOPEN .
+Preprocessors are never applied to standard input, even with the
+.BI |\- cmd
+form of
+.BR LESSOPEN .
+.IP \(bu
+.B \-r
+is the same as
+.BR \-R :
+other control sequences are never sent to the terminal, and
+.B \-u
+never sends raw backspaces or carriage returns.
+Control characters show as bold
+.BI ^ X
+and other unprintable bytes as
+.BI < XX >
+or
+.BI <U+ XXXX >\fR;\fP
+.B LESSBINFMT
+and
+.B LESSUTFBINFMT
+are not used.
+.IP \(bu
+.B \-?
+prints an option summary and exits, rather than showing the help screen.
+.IP \(bu
+History is kept in
+.I ~/.fastlesshst
+.RB ( FASTLESSHISTFILE ),
+separate from
+.BR less 's.
+.SS Not supported
+.IP \(bu 3
+Tags
+.RB ( \-t ", " \-T ", " :t ),
+log files
+.RB ( \-o ", " \-O ),
+colors
+.RB ( \-D ", " \-\-use\-color ),
+.BR \-\-modelines ,
+.BR \-\(dq ,
+.BR \-\-use\-backslash ,
+OSC\ 8 hyperlinks, and compiled lesskey files
+.RB ( \-k ).
+.IP \(bu
+The
+.BI \- n
+form of
+.BI \-z n\fR,\fP
+as in
+.BR \-20 ,
+and capitalising only the first letter of an upper-case long option, as in
+.BR \-\-Quit\-at\-eof .
+.IP \(bu
+Environment variables other than those under
+.BR ENVIRONMENT ,
+among them
+.BR LESSHISTFILE ,
+.BR LESS_TERMCAP_* ,
+.BR LESSANSIENDCHARS ,
+.BR LESSMETACHARS ,
+and
+.BR LESS_IS_MORE .
+.IP \(bu
+Character sets other than UTF\-8 and single bytes.
+.\" ----------------------------------------------------------------------
+.SH NOTES
+A mapped file must not be truncated while it is shown, or the program may be
+killed by SIGBUS, as with any reader that maps files.
+Replacing the file by name does not change what is shown unless
+.B F
+is used with
+.BR \-\-follow\-name .
+A cold search still reads every scanned byte from storage; the mapping removes
+copies, not I/O.
+.PP
+fastless needs a 64-bit system with POSIX
+.BR REG_STARTEND ,
+such as Linux or macOS.
+.SH EXAMPLES
+.EX
+fastless huge.log
+fastless \-\-literal \-I \(aq+/connection reset\(aq huge.log.zst
+LESS=\-iR fastless build.log
+journalctl \-b | fastless +G
+fastless \-\-max\-mem 0 \-\-tmpdir /scratch dump.xz
+fastless \-\-find \(aqpanic:\(aq \-\-all kernel.log.bz2
+.EE
+.SH COPYRIGHT
+fastless is free software under the GNU General Public License, version 3.
+It includes the bzip2 block decoder of lbzip2, under the GPL version 3 or
+later.
+.SH SEE ALSO
+.BR less (1),
+.BR lesskey (1),
+.BR grep (1),
+.BR gzip (1),
+.BR zstd (1),
+.BR xz (1),
+.BR bzip2 (1),
+.BR lbzip2 (1)

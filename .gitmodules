@@ -1,3 +1,6 @@
 [submodule "zlib-ng"]
 	path = zlib-ng
 	url = https://github.com/zlib-ng/zlib-ng.git
+[submodule "lbzip2"]
+	path = lbzip2
+	url = https://github.com/kjn/lbzip2.git

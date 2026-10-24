@@ -115,7 +115,7 @@ with tempfile.TemporaryDirectory() as tmp:
     until(b'Match at byte 20')
     os.write(master, b'N')
     until(b'Match at byte 6')
-    os.write(master, b'r/second.*needle\r')
+    os.write(master, b'\x1br/second.*needle\r')
     until(b'Match at byte 13')
     os.write(master, b'q')
     assert child.wait(timeout=5) == 0
@@ -174,15 +174,24 @@ with tempfile.TemporaryDirectory() as tmp:
     os.close(master)
     os.close(slave)
     checks += 1
-    # Default mode is regex, and the pager rejects redirected stdin/stdout.
-    path.write_bytes(b'abc123\n')
+    # Default mode is regex; like less, output that is not a terminal gets the
+    # file's bytes, and standard input is read when no file is named.
+    path.write_bytes(b'abc123\n\x1b[31m\n')
     e = dict(os.environ, LESS='')
     p = subprocess.run([EXE, *SIMD_FLAGS, '--find', '^abc[0-9]+$', str(path)],
                        capture_output=True, env=e, timeout=5)
     assert p.returncode == 0 and p.stdout == b'0\n'
     p = subprocess.run([EXE, *SIMD_FLAGS, str(path)], capture_output=True, env=e, timeout=5)
-    assert p.returncode == 2 and b'terminal' in p.stderr
-    checks += 2
+    assert p.returncode == 0 and p.stdout == path.read_bytes(), p
+    p = subprocess.run([EXE, *SIMD_FLAGS, str(path), '-', str(path)], input=b'piped\n',
+                       capture_output=True, env=e, timeout=5)
+    assert p.returncode == 0 and p.stdout == path.read_bytes() + b'piped\n' + path.read_bytes(), p
+    p = subprocess.run([EXE, *SIMD_FLAGS, '--find', 'pip'], input=b'xpiped\n',
+                       capture_output=True, env=e, timeout=5)
+    assert p.returncode == 0 and p.stdout == b'1\n', p
+    p = subprocess.run([EXE, *SIMD_FLAGS, str(path) + '.missing'], capture_output=True, env=e, timeout=5)
+    assert p.returncode == 2 and b'No such file' in p.stderr
+    checks += 5
     # Inspect actual terminal output, including reset boundaries and redraws.
     def highlight_case(payload, pattern, mode, expected, options=(), redraw=None,
                        env=None):
@@ -210,7 +219,7 @@ with tempfile.TemporaryDirectory() as tmp:
             raise AssertionError(('Incomplete terminal frame', out))
         try:
             initial = frame()
-            assert b'\x1b[7m' not in initial
+            assert b'\x1b[7m' not in initial.replace(b'\x1b[7m>\x1b[0m', b'')
             os.write(master, b'/' + pattern.encode() + b'\r')
             rendered = frame(b'Searching...')
             for fragment in expected:
@@ -242,10 +251,13 @@ with tempfile.TemporaryDirectory() as tmp:
     highlight_case(b'ababa!\n', 'aba', '--regex', [on + b'ababa' + off + b'!'])
     highlight_case(b'aaab!\n', 'a*', '--regex', [on + b'aaa' + off + b'b!'])
     highlight_case(b'plain\n', '^', '--regex', [b'\x1b[2Kplain\r\n'])
+    # A chopped line ends with the --rscroll marker in the last column.
     highlight_case(b'x' * 150 + b'\n', '^x{150}$', '--regex',
-                   [on + b'x' * 119 + off + b'\r\n'])
+                   [on + b'x' * 118 + off + on + b'>' + off + b'\r\n'])
     highlight_case(b'a\tb!\n', 'a.b', '--regex', [on + b'a       b' + off + b'!'])
-    highlight_case(b'a\x1bb!\n', 'a.b', '--regex', [on + b'a.b' + off + b'!'])
+    # Control bytes show as bold ^X, so files cannot send escape sequences.
+    highlight_case(b'a\x1bb!\n', 'a.b', '--regex',
+                   [on + b'a\x1b[1m^[\x1b[0m\x1b[7mb' + off + b'!'])
     highlight_case(b'has needle here\nplain\n', '*needle*', '--glob',
                    [on + b'has needle here' + off + b'\r\n', b'\x1b[2Kplain\r\n'])
 print(f'{checks} integration checks passed')
