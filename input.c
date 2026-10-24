@@ -23,6 +23,8 @@
 #endif
 #include <zstd.h>
 #include <lzma.h>
+#include "gzip.h"
+#include "zframes.h"
 #ifdef FASTLESS_LBZIP2
 #include "bzip2.h"
 #else
@@ -126,21 +128,28 @@ static size_t page_round(size_t n) { return round_up(n, (size_t)sysconf(_SC_PAGE
    leaves room and the pages can be committed, otherwise a heap buffer. */
 static int next_buffer(Decoder *d) {
     if (d->in_place) {
+        /* The lock is for ordered_place on other threads. */
+        pthread_mutex_lock(&d->lock);
         size_t room = d->limit - d->written;
         size_t capacity = room < BUFFER_SIZE ? room : BUFFER_SIZE;
         size_t end = round_up(d->written + capacity, COMMIT_STEP);
         if (end > d->reserved) end = d->reserved;
         if (capacity && end > d->committed &&
-            mprotect(d->memory + d->committed, end - d->committed, PROT_READ | PROT_WRITE))
-            capacity = 0; /* Out of committable memory: spill early. */
-        else if (end > d->committed) d->committed = end;
+            mprotect(d->memory + d->committed, end - d->committed, PROT_READ | PROT_WRITE)) {
+            /* Out of committable memory: spill early, once what is
+               committed, which holds all output placed ahead, is used. */
+            size_t left = d->committed > d->written ? d->committed - d->written : 0;
+            if (capacity > left) capacity = left;
+        } else if (end > d->committed) d->committed = end;
         if (capacity) {
             d->buffer = d->memory + d->written;
             d->capacity = capacity;
-            return 0;
+        } else {
+            d->in_place = false;
+            d->buffer = NULL;
         }
-        d->in_place = false;
-        d->buffer = NULL;
+        pthread_mutex_unlock(&d->lock);
+        if (capacity) return 0;
     }
     if (!d->buffer && !(d->buffer = malloc(BUFFER_SIZE)))
         return failure(d, "Cannot allocate decompression buffer");
@@ -242,6 +251,43 @@ static int write_output(Decoder *d, size_t length, size_t consumed) {
 static size_t chunk_size(size_t remaining) {
     return remaining > BUFFER_SIZE ? BUFFER_SIZE : remaining;
 }
+/* Output decoded on other threads arrives in order and is copied into the
+   output buffers, a full buffer at a time. */
+typedef struct { Decoder *d; size_t fill; } Ordered;
+static int ordered_output(void *context, const unsigned char *data, size_t length, size_t consumed) {
+    Ordered *o = context;
+    while (length) {
+        size_t n = o->d->capacity - o->fill < length ? o->d->capacity - o->fill : length;
+        /* Output placed ahead (ordered_place) is already where it belongs. */
+        if (o->d->buffer + o->fill != data) memcpy(o->d->buffer + o->fill, data, n);
+        o->fill += n;
+        data += n;
+        length -= n;
+        if (o->fill == o->d->capacity) {
+            if (write_output(o->d, o->fill, consumed)) return 1;
+            o->fill = 0;
+        }
+    }
+    return 0;
+}
+/* Memory for output bytes [offset, offset + length), which other threads
+   may fill before passing them to ordered_output, while output fits in
+   memory; otherwise NULL. */
+static unsigned char *ordered_place(void *context, size_t offset, size_t length) {
+    Decoder *d = ((Ordered *)context)->d;
+    unsigned char *at = NULL;
+    pthread_mutex_lock(&d->lock);
+    if (d->in_place && offset <= d->limit && length <= d->limit - offset) {
+        size_t end = round_up(offset + length, COMMIT_STEP);
+        if (end > d->reserved) end = d->reserved;
+        if (end <= d->committed || !mprotect(d->memory + d->committed, end - d->committed, PROT_READ | PROT_WRITE)) {
+            if (end > d->committed) d->committed = end;
+            at = d->memory + offset;
+        }
+    }
+    pthread_mutex_unlock(&d->lock);
+    return at;
+}
 #ifdef FASTLESS_ISAL
 static const char *isal_error(int rc) {
     switch (rc) {
@@ -256,7 +302,7 @@ static const char *isal_error(int rc) {
 }
 /* ISA-L's igzip decoder, which checks the header, CRC-32, and length of
    each member like zlib. */
-static int decode_gzip(Decoder *d, const unsigned char *source, size_t length) {
+static int decode_gzip_serial(Decoder *d, const unsigned char *source, size_t length) {
     struct inflate_state *s = malloc(sizeof(*s));
     if (!s) return failure(d, "Cannot allocate gzip decoder");
     isal_inflate_init(s);
@@ -305,7 +351,7 @@ done:
     return result;
 }
 #else
-static int decode_gzip(Decoder *d, const unsigned char *source, size_t length) {
+static int decode_gzip_serial(Decoder *d, const unsigned char *source, size_t length) {
     z_stream z = {0};
     if (inflateInit2(&z, 15 + 16) != Z_OK) return failure(d, "Cannot initialize zlib");
     size_t pos = 0;
@@ -352,29 +398,22 @@ done:
     return result;
 }
 #endif
-#ifdef FASTLESS_LBZIP2
-/* Blocks decoded on lbzip2's threads arrive in order and are copied into the
-   output buffers, a full buffer at a time. */
-typedef struct { Decoder *d; size_t fill; } Bzip2Output;
-static int bzip2_output(void *context, const unsigned char *data, size_t length, size_t consumed) {
-    Bzip2Output *o = context;
-    while (length) {
-        size_t n = o->d->capacity - o->fill < length ? o->d->capacity - o->fill : length;
-        memcpy(o->d->buffer + o->fill, data, n);
-        o->fill += n;
-        data += n;
-        length -= n;
-        if (o->fill == o->d->capacity) {
-            if (write_output(o->d, o->fill, consumed)) return 1;
-            o->fill = 0;
-        }
-    }
-    return 0;
-}
-static int decode_bzip2(Decoder *d, const unsigned char *source, size_t length, unsigned threads) {
-    Bzip2Output o = {d, 0};
+/* Large inputs decode on every thread (gzip.c), which decodes most data
+   twice, so fewer than 4 threads are faster as one, as are small inputs. */
+static int decode_gzip(Decoder *d, const unsigned char *source, size_t length, unsigned threads) {
+    if (threads < 4 || length < gzip_parallel_minimum()) return decode_gzip_serial(d, source, length);
+    Ordered o = {d, 0};
     char message[256];
-    int rc = bzip2_decode(source, length, threads, d->cancel, bzip2_output, &o, message, sizeof(message));
+    int rc = gzip_decode(source, length, threads, d->cancel, ordered_output, ordered_place, &o, message, sizeof(message));
+    if (rc == -1) return failure(d, message);
+    if (rc) { cancelled(d); return -1; } /* Otherwise the output already failed. */
+    return o.fill ? write_output(d, o.fill, length) : 0;
+}
+#ifdef FASTLESS_LBZIP2
+static int decode_bzip2(Decoder *d, const unsigned char *source, size_t length, unsigned threads) {
+    Ordered o = {d, 0};
+    char message[256];
+    int rc = bzip2_decode(source, length, threads, d->cancel, ordered_output, &o, message, sizeof(message));
     if (rc == -1) return failure(d, message);
     if (rc) { cancelled(d); return -1; } /* Otherwise the output already failed. */
     return o.fill ? write_output(d, o.fill, length) : 0;
@@ -428,7 +467,7 @@ static int decode_bzip2(Decoder *d, const unsigned char *source, size_t length, 
     return result;
 }
 #endif
-static int decode_zstd(Decoder *d, const unsigned char *source, size_t length) {
+static int decode_zstd_serial(Decoder *d, const unsigned char *source, size_t length) {
     ZSTD_DStream *z = ZSTD_createDStream();
     if (!z) return failure(d, "Cannot allocate zstd decoder");
     size_t rc = ZSTD_initDStream(z), pos = 0;
@@ -455,6 +494,17 @@ static int decode_zstd(Decoder *d, const unsigned char *source, size_t length) {
 done:
     ZSTD_freeDStream(z);
     return result;
+}
+/* Input of several frames decodes on every thread (zframes.c). */
+static int decode_zstd(Decoder *d, const unsigned char *source, size_t length, unsigned threads) {
+    Ordered o = {d, 0};
+    char message[256];
+    int rc = zstd_frames_decode(source, length, threads, d->cancel, ordered_output, ordered_place, &o,
+                                message, sizeof(message));
+    if (rc == 1) return decode_zstd_serial(d, source, length);
+    if (rc == -1) return failure(d, message);
+    if (rc) { cancelled(d); return -1; } /* Otherwise the output already failed. */
+    return o.fill ? write_output(d, o.fill, length) : 0;
 }
 static const char *xz_error(lzma_ret rc) {
     switch (rc) {
@@ -611,8 +661,8 @@ static int run_decoder(InputFile *file, const char *format, const unsigned char 
     }
     clock_gettime(CLOCK_MONOTONIC, &d.last_update);
     int rc = d.stream ? read_stream(&d, stream_fd, source, length) :
-             compression == COMP_GZIP ? decode_gzip(&d, source, length) :
-             compression == COMP_ZSTD ? decode_zstd(&d, source, length) :
+             compression == COMP_GZIP ? decode_gzip(&d, source, length, threads) :
+             compression == COMP_ZSTD ? decode_zstd(&d, source, length, threads) :
              compression == COMP_BZIP2 ? decode_bzip2(&d, source, length, threads) :
              decode_xz(&d, source, length, threads);
     if (d.threaded) {

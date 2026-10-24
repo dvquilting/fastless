@@ -285,14 +285,7 @@ static void *worker(void *arg) {
     pthread_mutex_unlock(&p->lock);
     return NULL;
 }
-static void wait_changed(Pool *p) {
-    /* Timed, so that cancellation is seen while workers are busy. */
-    struct timespec until;
-    clock_gettime(CLOCK_REALTIME, &until);
-    until.tv_nsec += 100000000L;
-    if (until.tv_nsec >= 1000000000L) { until.tv_sec++; until.tv_nsec -= 1000000000L; }
-    pthread_cond_timedwait(&p->changed, &p->lock, &until);
-}
+static void wait_changed(Pool *p) { ordered_wait(&p->changed, &p->lock); }
 /* The decoded block starting at `pos`, from the workers if they found it:
    false only when cancelled. */
 static bool block_at(Pool *p, uint64_t pos, Block *out) {
@@ -323,7 +316,7 @@ static bool block_at(Pool *p, uint64_t pos, Block *out) {
 }
 
 int bzip2_decode(const unsigned char *source, size_t length, unsigned threads,
-                 volatile sig_atomic_t *cancel, Bzip2Sink sink, void *context,
+                 volatile sig_atomic_t *cancel, OrderedSink sink, void *context,
                  char *error, size_t error_size) {
     if (length < 4 || memcmp(source, "BZh", 3) || source[3] < '1' || source[3] > '9') {
         snprintf(error, error_size, "%s", bz_error(ERR_MAGIC));
@@ -350,12 +343,7 @@ int bzip2_decode(const unsigned char *source, size_t length, unsigned threads,
     }
     pthread_mutex_init(&p.lock, NULL);
     pthread_cond_init(&p.changed, NULL);
-    /* Signals stay with the main thread, which watches for cancellation. */
-    sigset_t all, old;
-    sigfillset(&all);
-    pthread_sigmask(SIG_SETMASK, &all, &old);
-    while (started < threads && !pthread_create(&workers[started], NULL, worker, &p)) ++started;
-    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    started = ordered_start(workers, threads, worker, &p);
 
     struct parser_state ps;
     parser_init(&ps, source[3] - '0', 0);

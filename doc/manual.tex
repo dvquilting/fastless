@@ -429,8 +429,8 @@ error, never a partial file.
 
 \begin{reftable}[0.15\linewidth]
 \thead{Format}{Decoder}
-gzip & Intel ISA-L or zlib-ng; one thread. \\
-zstd & libzstd; one thread, windows up to 128\,MiB. \\
+gzip & Intel ISA-L or zlib-ng; files of 2\,MiB or more on every thread (at least 4), starting at deflate blocks found in each part of the file. \\
+zstd & libzstd; several frames, as \cmd{pzstd} writes, on every thread, one frame on one; windows up to 128\,MiB. \\
 xz & liblzma; several threads when the file has several blocks, as threaded encoders write. \\
 bzip2 & lbzip2's block decoder on every thread, or libbz2 on one. \\
 \end{reftable}
@@ -649,8 +649,8 @@ changed inside the pager with \kbd{-}. In \env{LESS}, string values end at
 \opt{--compression=}\meta{format} & \cmd{auto}, \cmd{none}, \cmd{gzip}, \cmd{zstd}, \cmd{xz}, or \cmd{bzip2}. \own \\
 \opt{--max-mem=}\meta{GiB} & Memory for decoded or piped input before a temporary file (10). \own \\
 \opt{--tmpdir=}\meta{dir} & Where temporary files go. \own \\
-\opt{--threads=}\meta{n} & Threads for searching, counting, xz and bzip2: 1--256, or 0 for one per CPU up to 32. \own \\
-\opt{--simd=}\meta{mode} & \cmd{auto}, \cmd{off}, or \cmd{avx2} for literal searches. \own \\
+\opt{--threads=}\meta{n} & Threads for searching, counting, and decoding: 1--256, or 0 for one per CPU up to 32. \own \\
+\opt{--simd=}\meta{mode} & \cmd{auto}, \cmd{off}, or \cmd{avx2} for literal searches and gzip decoding. \own \\
 \opt{-f}, \opt{--force} & Open devices and other non-regular files. \\
 \opt{-L}, \opt{--no-lessopen} & Ignore \env{LESSOPEN}. \\
 \opt{--show-preproc-errors} & Report a failing preprocessor. \\

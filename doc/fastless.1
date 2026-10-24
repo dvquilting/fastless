@@ -32,7 +32,7 @@ gzip, zstd, xz, and bzip2 input is recognised by its first bytes, whatever the
 file is called, and decoded before it is shown: into memory, or into a
 temporary file once it exceeds
 .BR \-\-max\-mem .
-xz and bzip2 decode on several threads, and every integrity check is verified;
+Large files decode on several threads, and every integrity check is verified;
 damaged or truncated input is an error, never a partial file.
 .PP
 Without a
@@ -638,11 +638,11 @@ always uses a file (fastless).
 Where temporary files go (fastless).
 .TP
 .BI \-\-threads= n
-Threads for searching, counting lines, and decoding xz and bzip2: 1 to 256, or
+Threads for searching, counting lines, and decoding: 1 to 256, or
 0 (the default) for one per CPU, at most 32 (fastless).
 .TP
 .BR \-\-simd= auto | off | avx2
-Whether literal searches use fastless's AVX2 code;
+Whether literal searches and the threaded gzip decoder use fastless's AVX2 code;
 .B avx2
 is an error on a CPU without it (fastless).
 .TP
@@ -787,7 +787,15 @@ xz files decode on several threads when they hold several blocks, as threaded
 encoders write them.
 bzip2 decodes on every thread with the block decoder of
 .BR lbzip2 (1).
-gzip and zstd decode on one thread.
+gzip files of 2\ MiB or more decode on every thread when there are at least 4:
+each thread starts at a deflate block it finds in its own part of the file,
+decoding it twice until the 32\ KiB before it are known; output waiting
+for its place in memory is held to 32\ MiB per thread.
+zstd files of several frames, as
+.BR pzstd (1)
+writes them, decode on every thread; a file of one frame, as
+.B "zstd \-T0"
+writes, decodes on one.
 Archive members, such as those of a tar file, are not extracted.
 .\" ----------------------------------------------------------------------
 .SH PIPES AND STANDARD INPUT

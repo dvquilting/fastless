@@ -36,7 +36,9 @@ checkout. Without either, the build falls back to the installed zlib.
 `make ZLIB=isal`, `make ZLIB=ng`, or `make ZLIB=system` selects a decoder
 explicitly. ISA-L is linked as a shared library, so a binary built with it
 needs `libisal` installed where it runs; `make ZLIB=ng` builds one that
-doesn't. Run `make clean` after switching.
+doesn't. Run `make clean` after switching. Large gzip files decode on every
+thread (below), which needs zlib's interface: an ISA-L build still builds
+zlib-ng for that when it can, otherwise it uses the installed zlib.
 
 bzip2 input is decoded with the block decoder from
 [lbzip2](https://github.com/kjn/lbzip2), pinned as a second git submodule and
@@ -92,6 +94,51 @@ libdeflate is fast on everything but decodes only whole buffers: each gzip
 member needs an output buffer of its full, unknown size (the trailer holds it
 modulo 4 GiB) in one uninterruptible call with no progress, which does not fit
 decoding 200 GB files in bounded steps with Ctrl-C and `--max-mem` spilling.
+
+Deflate marks neither where its blocks start nor whether they start on a
+byte, and each block may copy from the 32 KiB before it, so a gzip member
+looks inherently serial. fastless decodes it in parallel anyway, after
+[rapidgzip](https://github.com/mxmlnkn/rapidgzip): each worker takes a chunk
+of the input (1-8 MiB), searches it bit by bit for the first position where a
+dynamic block header is valid and the block and the next header decode, and
+decodes from there without knowing the window. It decodes the chunk twice in
+step, with zlib-ng and with ISA-L where it is linked, using two made-up
+windows chosen so that a byte copied from the window comes out different in
+the two and the pair names its position. A worker stops at the block boundary
+where the next chunk's worker started, which proves that start real;
+otherwise it decodes on through that chunk too, so a false start only costs
+time. Once a chunk's predecessor is decoded, its real window follows from
+that one's last 32 KiB, and the workers fill in the window bytes (with AVX2
+gathers) as they copy each piece into its final place in memory. Every
+member's CRC-32 and length are still checked. Inputs under 2 MiB, and runs
+with fewer than 4 threads, use the one-thread decoder, which is faster there.
+
+zstd files of several frames, as `pzstd` and `zstd --seekable` write them or
+as concatenation makes them, decode one run of frames per worker; idle
+workers walk the frames' block headers to cut further runs while others
+decode. A single frame, as `zstd -T0` writes, cannot be split and still
+decodes on one thread; a first frame over 64 MiB is taken to be one, without
+walking it to its end.
+
+Ryzen 7 5700X (8 cores, 16 threads), warm cache, wall time of `fastless
+--find` on the file (decode plus a 1 GiB search), best of 3, 16 threads:
+
+| File | Compressed | One thread | Many threads |
+| --- | ---: | ---: | ---: |
+| 1 GiB of varied logs, `gzip -6` | 463 MB | 1.32 s | 0.55 s |
+| the same, `pigz -6` | 463 MB | 1.37 s | 0.52 s |
+| 700 MB tar of shared libraries, `gzip -6` | 318 MB | 0.79 s | 0.29 s |
+| the logs, `pzstd` (128 frames) | 369 MB | 1.11 s | 0.37 s |
+| the libraries, `pzstd` | 294 MB | 0.47 s | 0.28 s |
+| the logs, `zstd -T0` (one frame) | 340 MB | 1.11 s | 1.12 s |
+
+Output waiting to be placed is held in memory: at most 32 MiB per thread in
+all, where a gzip piece decoded twice counts double, plus up to 4 pieces (4 or
+8 MiB) for the chunk the main thread is reading. On these files, peak memory
+was 430 MB higher for gzip and 210 MB higher for pzstd than with one thread. In these
+logs, bytes that come from an earlier chunk's window never die out, as words
+recur within 32 KiB, so nearly every chunk is decoded twice; on data where
+they die out, the second decoding stops after them.
 Requires a 64-bit process and POSIX `REG_STARTEND` support (Linux and macOS).
 Each source file compiles separately, so `make -j` builds in parallel.
 
@@ -236,13 +283,16 @@ must contain, and only lines holding it are matched in full.
 The native C decoders write directly into the in-memory output, with compressed
 input accessed through mmap. Once output moves to a temporary file, they fill
 8 MiB buffers that a writer thread appends to it instead. Searching and
-xz decoding automatically use up to 32 logical CPUs; `--threads N` selects
+decoding automatically use up to 32 logical CPUs; `--threads N` selects
 1–256, or 0 for automatic.
 liblzma 5.4+ supports the threaded decoder; older versions use a single thread.
 Parallel decoding requires xz blocks with size metadata, usually produced by a
 threaded encoder; single-block files stay single-threaded. See the
 [liblzma decoder documentation](https://tukaani.org/xz/liblzma-api/container_8h.html).
-gzip and standard zstd streams are decoded with one decoder thread. xz limits
+Large gzip files and zstd files of several frames decode on every thread (see
+the build notes above); a zstd file of one frame decodes on one,
+and zstd's threads are fewer when frame windows would need more than 1 GiB
+together. xz limits
 thread buffering to a sixteenth of RAM (from 256 MiB to 2 GiB) and decoder
 memory to 512 MiB, reducing threads when necessary. zstd uses its library's default maximum window (128 MiB). These limits
 are independent of decoded file size; unusually large dictionaries/windows may
@@ -497,8 +547,9 @@ CPUs and Apple Silicon keep the portable implementation.
 ```
 
 `--simd auto|off|avx2` selects runtime dispatch; auto is the default. `avx2`
-reports an error if unsupported. `off` disables fastless's custom SIMD code;
-the system C/compression libraries may still use their own CPU acceleration.
+reports an error if unsupported. `off` disables fastless's custom SIMD code,
+including the gzip decoder's window filling; the system C/compression
+libraries may still use their own CPU acceleration.
 
 The vector matcher filters 32 candidate positions at a time using two pattern
 bytes, batches four vectors for larger forward scans, then verifies survivors.

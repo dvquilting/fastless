@@ -14,28 +14,36 @@ CMAKE ?= cmake
 # static zlib-compatible library when it is checked out and cmake is
 # available, and the installed zlib is the last resort. ZLIB=isal, ng, or
 # system selects one explicitly. Run `make clean` after switching.
+# Large gzip input is decoded on every thread (gzip.c), which needs zlib's
+# interface: with ZLIB=isal that comes from zlib-ng too when it can be built,
+# otherwise from the installed zlib.
 ZLIB ?= auto
+NG_BUILDABLE := $(if $(and $(wildcard zlib-ng/CMakeLists.txt),$(shell command -v $(CMAKE))),yes)
 ifeq ($(ZLIB),auto)
 ISAL_FOUND := $(shell $(PKG_CONFIG) --exists libisal 2>/dev/null && echo yes || \
 	(printf '\043include <isa-l/igzip_lib.h>\nint main(void) { struct inflate_state s; isal_inflate_init(&s); return 0; }\n' | \
 	$(CC) -x c - -o /dev/null -lisal 2>/dev/null && echo yes))
-override ZLIB := $(if $(ISAL_FOUND),isal,$(if $(and $(wildcard zlib-ng/CMakeLists.txt),$(shell command -v $(CMAKE))),ng,system))
+override ZLIB := $(if $(ISAL_FOUND),isal,$(if $(NG_BUILDABLE),ng,system))
+endif
+ifeq ($(ZLIB),isal)
+CPPFLAGS += -DFASTLESS_ISAL $(shell $(PKG_CONFIG) --cflags libisal 2>/dev/null)
+LDLIBS += $(shell $(PKG_CONFIG) --libs libisal 2>/dev/null || echo -lisal)
+ZLIB_API := $(if $(NG_BUILDABLE),ng,system)
+else ifeq ($(ZLIB),ng)
+ZLIB_API := ng
+else ifeq ($(ZLIB),system)
+ZLIB_API := system
+else
+$(error ZLIB must be auto, ng, system, or isal)
 endif
 ZLIB_NG := build/zlib-ng
-ifeq ($(ZLIB),ng)
+ifeq ($(ZLIB_API),ng)
 ZLIB_LIB := $(ZLIB_NG)/install/lib/libz.a
 ZLIB_PC :=
 CPPFLAGS += -I$(ZLIB_NG)/install/include
-else ifeq ($(ZLIB),system)
+else
 ZLIB_LIB :=
 ZLIB_PC := zlib
-else ifeq ($(ZLIB),isal)
-ZLIB_LIB :=
-ZLIB_PC :=
-CPPFLAGS += -DFASTLESS_ISAL $(shell $(PKG_CONFIG) --cflags libisal 2>/dev/null)
-LDLIBS += $(shell $(PKG_CONFIG) --libs libisal 2>/dev/null || echo -lisal)
-else
-$(error ZLIB must be auto, ng, system, or isal)
 endif
 
 # bzip2 input is decoded on every thread with lbzip2's block decoder, built
@@ -66,7 +74,7 @@ CPPFLAGS += $(shell $(PKG_CONFIG) --cflags $(ZLIB_PC) $(BZIP2_PC) libzstd liblzm
 LDLIBS += $(ZLIB_LIB) $(shell $(PKG_CONFIG) --libs $(ZLIB_PC) $(BZIP2_PC) libzstd liblzma 2>/dev/null || \
 	echo '$(if $(ZLIB_PC),-lz) $(if $(BZIP2_PC),-lbz2) -lzstd -llzma')
 
-OBJECTS := fastless.o pager.o options.o keys.o render.o input.o literal.o $(BZIP2_OBJECTS)
+OBJECTS := fastless.o pager.o options.o keys.o render.o input.o literal.o gzip.o zframes.o $(BZIP2_OBJECTS)
 
 fastless: $(OBJECTS) search.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
@@ -76,8 +84,11 @@ literal-tests: literal_tests.o literal.o
 
 # Tiny search and line-count pieces push even the small test files through
 # the threaded search and the line-number cache.
-# They also decode bzip2 in tiny pieces, missing and misplacing some blocks.
-TINY_OBJECTS := $(if $(BZIP2_OBJECTS),$(filter-out bzip2.o,$(OBJECTS)) bzip2-tiny.o,$(OBJECTS))
+# They also decode bzip2 in tiny pieces, missing and misplacing some blocks,
+# and gzip in tiny chunks, most of which hold no block start, and zstd in
+# runs of one or two frames.
+TINY_OBJECTS := $(filter-out gzip.o zframes.o,$(if $(BZIP2_OBJECTS),$(filter-out bzip2.o,$(OBJECTS)) bzip2-tiny.o,$(OBJECTS))) \
+	gzip-tiny.o zframes-tiny.o
 fastless-tiny: $(TINY_OBJECTS) search-tiny.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
@@ -93,12 +104,21 @@ fastless.o pager.o options.o: options.h input.h
 fastless.o pager.o keys.o: keys.h
 fastless.o pager.o render.o options.o: render.h
 fastless.o pager.o render.o search.o search-tiny.o: search.h literal.h
-input.o: input.h bzip2.h $(ZLIB_LIB)
+input.o: input.h bzip2.h gzip.h zframes.h ordered.h $(ZLIB_LIB)
+zframes.o: zframes.h ordered.h
+zframes-tiny.o: zframes.c zframes.h ordered.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) '-DZSTD_RUN=((size_t)64)' '-DZSTD_PIECE=((size_t)4096)' \
+		'-DZSTD_BUDGET_PER_THREAD=((size_t)16384)' -c -o $@ $<
+gzip.o: gzip.h ordered.h literal.h $(ZLIB_LIB)
+gzip-tiny.o: gzip.c gzip.h ordered.h literal.h $(ZLIB_LIB)
+	$(CC) $(CPPFLAGS) $(CFLAGS) '-DGZIP_PIECE=((size_t)4096)' '-DGZIP_STEP=((size_t)1024)' \
+		'-DGZIP_CHUNK_MIN=((size_t)2048)' '-DGZIP_CHUNK_MAX=((size_t)2048)' \
+		'-DGZIP_BUDGET_PER_THREAD=((size_t)16384)' -DGZIP_FALSE_STARTS -c -o $@ $<
 
-bzip2.o: bzip2.c bzip2.h
+bzip2.o: bzip2.c bzip2.h ordered.h
 	@test -f lbzip2/src/decode.c || { echo 'lbzip2 submodule missing; run: git submodule update --init' >&2; exit 1; }
 	$(CC) $(CPPFLAGS) $(LBZIP2_FLAGS) $(CFLAGS) -c -o $@ $<
-bzip2-tiny.o: bzip2.c bzip2.h
+bzip2-tiny.o: bzip2.c bzip2.h ordered.h
 	$(CC) $(CPPFLAGS) $(LBZIP2_FLAGS) $(CFLAGS) -DBZIP2_SCAN_TEST '-DEMIT_CHUNK=((size_t)4096)' \
 		'-DSCAN_STEP=((uint64_t)4096)' '-DBUDGET_PER_THREAD=((size_t)8192)' -c -o $@ $<
 # lbzip2's own sources, with its own C dialect and without our warnings.
@@ -146,7 +166,7 @@ check: fastless fastless-tiny literal-tests
 	python3 tests.py
 	FASTLESS_TEST_SIMD=off python3 tests.py
 	python3 compression_tests.py
-	FASTLESS_TEST_EXE="$(CURDIR)/fastless-tiny" FASTLESS_TEST_ONLY=bzip2 python3 compression_tests.py
+	FASTLESS_TEST_EXE="$(CURDIR)/fastless-tiny" FASTLESS_TEST_ONLY=threaded python3 compression_tests.py
 	python3 pager_tests.py
 	FASTLESS_TEST_EXE="$(CURDIR)/fastless-tiny" python3 tests.py
 	FASTLESS_TEST_EXE="$(CURDIR)/fastless-tiny" python3 pager_tests.py
