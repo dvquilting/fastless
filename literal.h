@@ -24,4 +24,6 @@ const unsigned char *literal_find(const Literal *pattern, const unsigned char *d
 const unsigned char *literal_reverse(const Literal *pattern, const unsigned char *data,
                                      size_t length, size_t before,
                                      volatile sig_atomic_t *cancel);
+/* Number of bytes in data[0..length) equal to `byte`. */
+size_t literal_count(const unsigned char *data, size_t length, unsigned char byte);
 #endif

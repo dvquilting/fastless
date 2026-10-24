@@ -111,6 +111,35 @@ int main(void) {
             verify(data, 128, text, 1, true, 80, avx2);
         }
     }
+    /* Byte counts at every length and alignment, including page borders. */
+    for (size_t trial = 0; trial < 4000; ++trial) {
+        size_t len = next_random() % 2000, from = next_random() % 64;
+        for (size_t i = 0; i < len + from; ++i)
+            data[i] = trial & 1 ? (unsigned char)next_random() : (unsigned char)("\n\nab"[next_random() % 4]);
+        unsigned char byte = trial % 3 ? '\n' : (unsigned char)next_random();
+        size_t expected = 0;
+        for (size_t i = from; i < from + len; ++i) expected += data[i] == byte;
+        for (int mode = 0; mode < 2; ++mode) {
+            literal_simd_configure(mode && avx2 ? "avx2" : "off");
+            if (literal_count(data + from, len, byte) != expected) {
+                fprintf(stderr, "count mismatch: len=%zu byte=%u\n", len, byte);
+                return 1;
+            }
+            ++checks;
+        }
+    }
+    mapping = mmap(NULL, page * 3, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapping == MAP_FAILED || mprotect(mapping + page, page, PROT_READ | PROT_WRITE)) abort();
+    memset(mapping + page, '\n', page);
+    for (size_t len = 0; len <= 700; ++len)
+        for (int mode = 0; mode < 2; ++mode) {
+            literal_simd_configure(mode && avx2 ? "avx2" : "off");
+            if (literal_count(mapping + page, len, '\n') != len ||
+                literal_count(mapping + 2 * page - len, len, '\n') != len) abort();
+            checks += 2;
+        }
+    munmap(mapping, page * 3);
+    literal_simd_configure(avx2 ? "avx2" : "off");
     Literal p;
     literal_init(&p, "abc", 3, true);
     volatile sig_atomic_t cancel = 1;

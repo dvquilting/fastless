@@ -1,0 +1,843 @@
+% The fastless user manual. Build with "make doc", which runs pdflatex twice
+% to produce doc/fastless.pdf. The reference manual page is doc/fastless.1;
+% doc_tests.py checks that both describe every option.
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{textcomp}
+\usepackage{charter}
+\usepackage{tgheros}
+\usepackage{lmodern}
+\renewcommand{\rmdefault}{bch}
+\renewcommand{\ttdefault}{lmtt}
+\usepackage[a4paper,margin=25mm,top=28mm,bottom=28mm,headsep=10mm,headheight=14pt]{geometry}
+\usepackage[protrusion=true,expansion=false]{microtype}
+% Code keeps "--" as two hyphens.
+\makeatletter
+\expandafter\let\expandafter\fl@ttfamily\csname ttfamily \endcsname
+\expandafter\def\csname ttfamily \endcsname{\fl@ttfamily\pdfnoligatures\font}
+\makeatother
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{colortbl}
+\usepackage{fancyhdr}
+\usepackage{fancyvrb}
+\usepackage{multicol}
+\usepackage{parskip}
+\usepackage{etoolbox}
+\usepackage{caption}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{accent}{HTML}{1F5F8B}
+\definecolor{accentlight}{HTML}{E8F0F6}
+\definecolor{keybg}{HTML}{ECEEF1}
+\definecolor{keyedge}{HTML}{B8BEC6}
+\definecolor{rule}{HTML}{C9D3DC}
+\definecolor{muted}{HTML}{5A6570}
+\definecolor{good}{HTML}{2E7D4F}
+\definecolor{warn}{HTML}{A15C00}
+
+\hypersetup{
+  colorlinks=true, linkcolor=accent, urlcolor=accent,
+  pdftitle={fastless User Manual},
+  pdfsubject={A less-compatible pager for very large and compressed files},
+  pdfkeywords={pager, less, search, gzip, zstd, xz, bzip2},
+  bookmarksnumbered=true, bookmarksopen=true,
+}
+
+% Headings: sans serif, in the accent color.
+\makeatletter
+\renewcommand\section{\@startsection{section}{1}{\z@}{-3.2ex \@plus -1ex \@minus -.2ex}%
+  {1.6ex \@plus .2ex}{\sffamily\Large\bfseries\color{accent}}}
+\renewcommand\subsection{\@startsection{subsection}{2}{\z@}{-2.6ex\@plus -1ex \@minus -.2ex}%
+  {1ex \@plus .2ex}{\sffamily\large\bfseries\color{accent}}}
+\renewcommand\subsubsection{\@startsection{subsubsection}{3}{\z@}{-2ex\@plus -1ex \@minus -.2ex}%
+  {.6ex \@plus .2ex}{\sffamily\normalsize\bfseries}}
+\renewcommand\@seccntformat[1]{\csname the#1\endcsname\hspace{.8em}}
+\makeatother
+\setcounter{tocdepth}{2}
+% Long option names cannot be hyphenated; let their lines stretch instead.
+\setlength{\emergencystretch}{3em}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\sffamily\small\color{muted}fastless User Manual}
+\fancyhead[R]{\sffamily\small\color{muted}\nouppercase{\leftmark}}
+\fancyfoot[C]{\sffamily\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{{\color{rule}\hrule height\headrulewidth width\headwidth}}
+\renewcommand{\sectionmark}[1]{\markboth{#1}{}}
+
+% Keys and other markup.
+\newcommand{\kbd}[1]{{\setlength{\fboxsep}{1.2pt}\setlength{\fboxrule}{0.4pt}%
+  \fcolorbox{keyedge}{keybg}{\vphantom{Ag}\small\ttfamily #1}}}
+\newcommand{\cmd}[1]{\texttt{#1}}
+% An option name may break after a hyphen inside it, as in --max-|mem, but
+% not after its leading dashes.
+\makeatletter
+\newif\iffl@named
+\def\fl@end{\fl@end}
+\newcommand{\opt}[1]{\texttt{\fl@namedfalse\fl@walk#1\fl@end}}
+\def\fl@walk#1{\ifx#1\fl@end\else\fl@char#1\expandafter\fl@walk\fi}
+\def\fl@char#1{\ifx-#1-\iffl@named\discretionary{}{}{}\fi\else#1\fl@namedtrue\fi}
+\makeatother
+\newcommand{\file}[1]{\textit{#1}}
+\newcommand{\env}[1]{\texttt{#1}}
+\newcommand{\meta}[1]{\textit{#1}}
+\newcommand{\fl}{\textsf{\small\color{accent}fastless}}
+\newcommand{\bs}{\textbackslash}
+\newcommand{\caret}{\textasciicircum}
+\newcommand{\tl}{\raisebox{.42ex}{\texttildelow}}
+
+% A shaded note.
+\newsavebox{\notebox}
+\newenvironment{note}[1][Note]%
+  {\par\medskip\begin{lrbox}{\notebox}\begin{minipage}{\dimexpr\linewidth-14pt-3pt\relax}%
+   \textsf{\bfseries\color{accent}#1.}\enspace}%
+  {\end{minipage}\end{lrbox}\noindent{\setlength{\fboxsep}{7pt}\setlength{\fboxrule}{0pt}%
+   \color{accent}\vrule width 3pt\colorbox{accentlight}{\color{black}\usebox{\notebox}}}\par\medskip}
+
+% Shell examples.
+\DefineVerbatimEnvironment{shell}{Verbatim}%
+  {fontsize=\small,frame=leftline,framerule=2pt,rulecolor=\color{accent},
+   xleftmargin=1em,framesep=1em,samepage=true,commandchars=\\\{\}}
+
+% Tables of keys or options: a term column and a description.
+\newenvironment{reftable}[1][0.30\linewidth]%
+  {\renewcommand{\arraystretch}{1.25}%
+   \begin{longtable}{@{}>{\raggedright\arraybackslash}p{#1}>{\raggedright\arraybackslash}p{\dimexpr\linewidth-#1-2\tabcolsep\relax}@{}}}%
+  {\end{longtable}\vspace{-1ex}}
+\newcommand{\thead}[2]{\toprule\textsf{\bfseries #1} & \textsf{\bfseries #2}\\\midrule\endhead\bottomrule\endfoot}
+\newcommand{\cnt}{\textsuperscript{\color{accent}$\ast$}}
+
+\begin{document}
+
+% ---------------------------------------------------------------- title
+\pagenumbering{alph}
+\begin{titlepage}
+\vspace*{40mm}
+{\sffamily\fontsize{46}{50}\selectfont\bfseries\color{accent}fastless\par}
+\vspace{6mm}
+{\sffamily\LARGE A less-compatible pager for very large\\[1mm] and compressed files\par}
+\vspace{10mm}
+{\color{accent}\rule{\linewidth}{1.2pt}}
+\vspace{6mm}
+
+{\large User manual for version 1.0\par}
+\vspace{2mm}
+{\color{muted}October 2026\par}
+
+\vfill
+\begin{minipage}{0.78\linewidth}\small\color{muted}
+\fl{} pages files of hundreds of gigabytes with the keys, options, and prompts of
+GNU less. It maps files instead of reading them, decodes gzip, zstd, xz, and bzip2
+on its own, and searches with every core.
+
+\medskip
+Copyright \textcopyright{} 2026 the fastless authors. fastless is free software,
+distributed under the GNU General Public License, version 3.
+\end{minipage}
+\end{titlepage}
+
+\pagenumbering{roman}
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+
+% ---------------------------------------------------------------- intro
+\section{Introduction}
+
+\fl{} is a terminal pager in the tradition of \cmd{more} and GNU \cmd{less}. If
+you know \cmd{less}, you already know how to use it: the keys, the command-line
+options, the \env{LESS} variable, prompts, marks, lesskey files, and input
+preprocessors all work the same way. What is different is the scale it is built
+for.
+
+\begin{itemize}
+\item \textbf{Huge files open instantly.} A plain file is mapped into memory
+  read-only. Nothing is copied and no line index is built, so a 200\,GB log opens
+  as fast as a small one, and memory use does not grow with the file.
+\item \textbf{Searches use every core.} A search that runs further than 8\,MiB is
+  split into pieces that are searched in parallel; the first match in file order
+  is still the one reported. Literal searches use AVX2 instructions on CPUs that
+  have them.
+\item \textbf{Compressed files are understood natively.} gzip, zstd, xz, and
+  bzip2 are recognised by their content, decoded (on several threads for xz and
+  bzip2), and verified before the first page is shown.
+\item \textbf{Three ways to search.} Besides regular expressions, \fl{} can
+  search for literal bytes, which is the fastest, or match whole lines against a
+  glob pattern.
+\item \textbf{Pipes are paged as they arrive}, just as in \cmd{less}, without
+  slowing down ordinary files.
+\end{itemize}
+
+Section~\ref{sec:less} lists everything that behaves differently from \cmd{less}.
+
+% ---------------------------------------------------------------- start
+\section{Getting started}
+
+\subsection{Building and installing}
+
+\fl{} is written in C and builds with GCC or Clang on 64-bit Linux and macOS. It
+needs \cmd{pkg-config}, libzstd, liblzma, and a gzip decoder. Clone the
+repository with its submodules, which supply zlib-ng and the lbzip2 decoder:
+
+\begin{shell}
+git clone --recursive https://github.com/dvquilting/fastless.git
+cd fastless
+make
+sudo make install          \textit{# into /usr/local; PREFIX=... to change}
+\end{shell}
+
+On Debian and Ubuntu, the build dependencies are:
+
+\begin{shell}
+sudo apt install build-essential pkg-config cmake libisal-dev zlib1g-dev \bs
+                 libbz2-dev libzstd-dev liblzma-dev
+\end{shell}
+
+For gzip, the build uses Intel ISA-L when it is installed, otherwise the bundled
+zlib-ng, otherwise the system zlib; \cmd{make ZLIB=isal}, \cmd{ZLIB=ng}, or
+\cmd{ZLIB=system} chooses one. bzip2 uses the bundled lbzip2 decoder, or the
+system libbz2 with \cmd{make BZIP2=system}. \cmd{make check} runs the test
+suites, and \cmd{make doc} rebuilds this manual.
+
+\subsection{A first look}
+
+\begin{shell}
+fastless huge.log                  \textit{# page a file}
+fastless huge.log.zst other.log.gz \textit{# compressed files, two of them}
+some-command | fastless            \textit{# a pipe, shown as it arrives}
+LESS=-iR fastless build.log        \textit{# options from the environment}
+fastless +G --literal app.log      \textit{# start at the end, literal searches}
+\end{shell}
+
+Inside the pager, \kbd{Space} and \kbd{b} move a window forward and back,
+\kbd{j} and \kbd{k} a line, \kbd{g} and \kbd{G} go to the start and the end, and
+\kbd{/} searches. \kbd{h} shows a summary of every command, and \kbd{q} quits.
+
+The status line at the bottom is \fl's own. It shows the file name, the byte
+position and percentage, the search mode, and a reminder of the main keys:
+
+\begin{shell}
+huge.log | byte 1048576/214748364800 (0.0%) | regex | q quit; h help; / search
+\end{shell}
+
+\cmd{-m}, \cmd{-M}, and \cmd{-P} switch to \cmd{less}'s prompts instead
+(Section~\ref{sec:prompts}).
+
+When standard output is not a terminal, \fl{} does not page at all: it copies its
+input to standard output, decoded if it was compressed. So
+\cmd{fastless huge.log.zst | grep ERROR} works like \cmd{zstdcat}.
+
+% ---------------------------------------------------------------- moving
+\section{Moving around}
+
+Commands are single keys, typed without \kbd{Return}. Those marked \cnt{} may
+be preceded by a number $N$: \cmd{10j} moves ten lines, \cmd{50\%} goes halfway,
+and \cmd{3n} finds the third match. \kbd{\caret X} means Control-X, and
+\kbd{ESC-x} means Escape followed by x.
+
+\subsection{Scrolling}
+
+\begin{reftable}
+\thead{Keys}{Action}
+\kbd{Space} \kbd{f} \kbd{\caret F} \kbd{\caret V} \kbd{PgDn}\cnt & Forward one window, or $N$ lines. \\
+\kbd{b} \kbd{\caret B} \kbd{ESC-v} \kbd{PgUp}\cnt & Backward one window, or $N$ lines. \\
+\kbd{z} \,/\, \kbd{w}\cnt & Forward / backward a window, setting the window size to $N$. \\
+\kbd{ESC-Space}\cnt & Forward a window, even at the end of the file. \\
+\kbd{j} \kbd{e} \kbd{Return} \kbd{\caret E} \kbd{\caret N} \kbd{Down}\cnt & Forward one line, or $N$ lines. \\
+\kbd{k} \kbd{y} \kbd{\caret Y} \kbd{\caret P} \kbd{\caret K} \kbd{Up}\cnt & Backward one line, or $N$ lines. \\
+\kbd{J} \,/\, \kbd{K} \kbd{Y}\cnt & Forward / backward a line, even past either end. \\
+\kbd{d} \kbd{\caret D} \,/\, \kbd{u} \kbd{\caret U}\cnt & Forward / backward half a window, setting the half-window to $N$. \\
+\kbd{ESC-)} \kbd{Right} \,/\, \kbd{ESC-(} \kbd{Left}\cnt & Right / left half a screen, or $N$ columns. \\
+\kbd{ESC-\}} \kbd{\caret Right} & Right to the end of the longest line on the screen. \\
+\kbd{ESC-\{} \kbd{\caret Left} & Back to the first column. \\
+\kbd{F} & Follow the end of the file, like \cmd{tail -f}. Any key stops. \\
+\kbd{ESC-F} & Follow, stopping when the search pattern appears. \\
+\kbd{r} \kbd{\caret R} \kbd{\caret L} & Repaint the screen. \\
+\kbd{R} & Repaint, first taking in growth of the file. \\
+\end{reftable}
+
+Long lines are never wrapped; they end with a \texttt{>} in the last column, and
+the horizontal commands bring the rest into view.
+
+\subsection{Jumping}
+
+\begin{reftable}
+\thead{Keys}{Action}
+\kbd{g} \kbd{<} \kbd{ESC-<} \kbd{Home}\cnt & The first line, or line $N$. \\
+\kbd{G} \kbd{>} \kbd{ESC->} \kbd{End}\cnt & The last line, or line $N$. \\
+\kbd{p} \kbd{\%}\cnt & $N$ percent into the file; decimals such as \cmd{37.5\%} work. \\
+\kbd{P}\cnt & Byte offset $N$. \hfill\textsf{\footnotesize\color{accent}fastless} \\
+\kbd{\{} \kbd{(} \kbd{[}\cnt & The bracket closing the first such bracket on the top line. \\
+\kbd{\}} \kbd{)} \kbd{]}\cnt & The bracket opening the last such bracket on the bottom line. \\
+\kbd{ESC-\caret F}\,\meta{a b} & The same for any pair of characters \meta{a} and \meta{b}; \kbd{ESC-\caret B} backward. \\
+\end{reftable}
+
+\subsection{Marks}
+
+\begin{reftable}
+\thead{Keys}{Action}
+\kbd{m}\meta{x} \,/\, \kbd{M}\meta{x} & Mark the top / bottom line with the letter \meta{x}. \\
+\kbd{'}\meta{x} \,or\, \kbd{\caret X\caret X}\meta{x} & Go to mark \meta{x}. \\
+\kbd{'}\kbd{'} & Back to the previous position, before the last jump. \\
+\kbd{'}\kbd{\caret} \,/\, \kbd{'}\kbd{\$} & The start / end of the file. \\
+\kbd{ESC-m}\meta{x} & Clear mark \meta{x}. \\
+\end{reftable}
+
+With \opt{--save-marks}, marks are kept in the history file between sessions.
+With \opt{--mouse}, the wheel scrolls (\opt{--wheel-lines} at a time) and a click
+sets mark \cmd{\#}.
+
+% ---------------------------------------------------------------- search
+\section{Searching}
+
+\subsection{Search commands}
+
+\begin{reftable}
+\thead{Keys}{Action}
+\kbd{/}\meta{pattern}\cnt & Search forward for the ($N$-th) line with a match. \\
+\kbd{?}\meta{pattern}\cnt & Search backward. \\
+\kbd{n} \,/\, \kbd{N}\cnt & Repeat the search in the same / opposite direction. \\
+\kbd{ESC-n} \,/\, \kbd{ESC-N}\cnt & Repeat, continuing into the following / preceding files. \\
+\kbd{\&}\meta{pattern} & Show only the lines that match; \kbd{\&} alone shows all lines again. \\
+\kbd{ESC-u} \,/\, \kbd{ESC-U} & Toggle highlighting / forget the pattern. \\
+\kbd{ESC-r} \kbd{ESC-l} \kbd{ESC-w} & Regular-expression, literal, or glob mode. \hfill\textsf{\footnotesize\color{accent}fastless} \\
+\end{reftable}
+
+A match is reported by its byte offset, and the line holding it is placed on the
+jump target line (\opt{-j}; the top line by default). Every match on the screen is
+highlighted, overlapping ones included; \opt{-g} highlights only the one found and
+\opt{-G} none. A new forward search starts at the target line; \opt{-a} starts it
+after the screen, and \opt{-A} just after the target line. \opt{--incsearch}
+searches as you type, each keystroke cancelling the search still running.
+
+\subsection{Three search modes}
+
+\begin{reftable}[0.22\linewidth]
+\thead{Mode}{Matches}
+\textbf{Regex} \newline \opt{--regex}, \kbd{ESC-r} \newline \textsf{\footnotesize\color{muted}the default} &
+POSIX extended regular expressions, such as \cmd{\caret ERROR.*timeout}, matched
+within each line without its newline. \\
+\textbf{Literal} \newline \opt{--literal}, \kbd{ESC-l} &
+The pattern's exact bytes, anywhere, even across line ends. The fastest mode,
+using AVX2 where available. \\
+\textbf{Glob} \newline \opt{--glob}, \kbd{ESC-w} &
+A pattern for the \emph{whole line}: \cmd{*} matches any bytes, \cmd{?} one byte,
+and \cmd{\bs} quotes the next character. Use \cmd{*text*} to find \meta{text}
+anywhere in a line. Bracket classes are not supported. \\
+\end{reftable}
+
+Switching modes recompiles the current pattern, so \kbd{n} goes on with the same
+text under the new rules. A regex or glob is not run on every line: \fl{} first
+works out the longest run of plain characters that every match must contain,
+finds the lines holding it with the literal matcher, and runs the full pattern
+only on those. For \cmd{\caret ERROR.*timeout}, only lines containing
+\cmd{ERROR} are examined. For alternatives such as \cmd{timeout|refused}, a run
+from each alternative is looked for, and only lines holding one are examined.
+
+\begin{note}[Tip]
+For the fastest searches of very large files, use literal mode, and give a
+starting point with a mark, a percentage, or \kbd{P} so that less of the file
+has to be read from storage.
+\end{note}
+
+\subsection{Case}
+
+\opt{-i} ignores case when the pattern contains no capital letters (``smart
+case''), \opt{-I} always ignores it, and \opt{--case-sensitive} never does.
+Matching is done in bytes in the C locale: case folding covers ASCII letters
+only, and a UTF-8 pattern matches its encoded bytes.
+
+\subsection{Pattern modifiers}
+
+As in \cmd{less}, a pattern may begin with modifiers, which also change the
+prompt's label:
+
+\begin{reftable}[0.18\linewidth]
+\thead{Modifier}{Effect}
+\kbd{\caret N} or \cmd{!} & Find lines that do \emph{not} match. \\
+\kbd{\caret E} or \cmd{*} & Continue through the following (or preceding) files. \\
+\kbd{\caret F} or \cmd{@} & Start at the first file (\cmd{/}) or the last (\cmd{?}). \\
+\kbd{\caret K} & Highlight the matches without moving. \\
+\kbd{\caret R} & Search literally, for this pattern only. \\
+\kbd{\caret S}\,\meta{n} & Match parenthesised subexpression \meta{n} and highlight just it. \\
+\kbd{\caret W} & Wrap to the other end of the file if nothing is found. \\
+\kbd{\caret L} & Enter the next character literally. \\
+\end{reftable}
+
+The punctuation forms \cmd{!}, \cmd{*}, and \cmd{@} are modifiers only in regex
+mode, because glob patterns such as \cmd{*error*} and literal ones such as
+\cmd{!important} begin with them. \opt{--search-options=EFKNRW} sets modifiers for
+every search. \kbd{n} and \kbd{N} keep the modifiers except \kbd{\caret F} and
+\kbd{\caret K}, and an empty pattern reuses the current one with new modifiers.
+
+\subsection{Filtering}
+
+\kbd{\&}\meta{pattern} shows only matching lines (with \kbd{\caret N}, only
+those that do not match), and movement, searches, and marks then refer to the
+lines shown. Filtering keeps no index: each line shown is found with the same
+threaded search, so a page of sparse matches costs a scan of the bytes between
+them.
+
+\subsection{Searching without the pager}
+
+\opt{--find} prints the zero-based byte offset of the first match and exits, and
+with \opt{--all}, every match, overlapping ones included. \opt{--offset} starts
+the search at a byte position. Glob mode prints one offset per matching line.
+
+\begin{shell}
+fastless --find '\caret ERROR.*timeout' huge.log
+fastless --literal --find needle --all huge.log.zst
+fastless --literal --find needle --offset 150000000000 huge.log
+\end{shell}
+
+The exit status is 0 if something matched, 1 if nothing did, 2 for an error,
+and 130 if the search was interrupted.
+
+% ---------------------------------------------------------------- input
+\section{Files, compressed input, and pipes}
+
+\subsection{Several files}
+
+\begin{reftable}
+\thead{Keys}{Action}
+\kbd{:e} [\meta{file}] \kbd{\caret X\caret V} & Examine a new file; \cmd{:e} alone rereads the current one. \\
+\kbd{:n} \,/\, \kbd{:p}\cnt & The next / previous file named on the command line. \\
+\kbd{:x}\cnt & The first (or $N$-th) file. \\
+\kbd{:d} & Remove the current file from the list. \\
+\kbd{=} \kbd{\caret G} \kbd{:f} & Show the file name, position, and size. \\
+\end{reftable}
+
+Only the current file is kept open. Moving to another file releases a decoded
+file's memory, and coming back decodes it again. Standard input, pipes, and
+devices cannot be read twice, so they stay open with what was read.
+
+\subsection{Compressed files}
+
+gzip, zstd, xz, and bzip2 input is recognised by its first bytes, so names and
+extensions do not matter, and \opt{--compression} can force a format or
+\cmd{none}. Concatenated gzip members, zstd frames, xz streams, and bzip2 streams
+are all read; only zero bytes may follow the last one. The whole file is decoded
+and its checksums verified before the first page appears. Progress is shown on
+standard error, and \kbd{\caret C} cancels. Damaged or truncated data is an
+error, never a partial file.
+
+\begin{reftable}[0.15\linewidth]
+\thead{Format}{Decoder}
+gzip & Intel ISA-L or zlib-ng; one thread. \\
+zstd & libzstd; one thread, windows up to 128\,MiB. \\
+xz & liblzma; several threads when the file has several blocks, as threaded encoders write. \\
+bzip2 & lbzip2's block decoder on every thread, or libbz2 on one. \\
+\end{reftable}
+
+Decoded data is kept in memory up to \opt{--max-mem} (10\,GiB unless set; fractions
+such as \cmd{0.5} work). Larger output moves to a temporary file, created with mode
+0600 in \opt{--tmpdir}, \env{\$TMPDIR}, or \file{/tmp} and deleted at once, so it
+disappears when \fl{} exits for any reason.
+
+\begin{note}[Plan for the disk space]
+Decoded data can be many times the size of the compressed file, and the temporary
+file needs room for all of it. On Linux, \file{/tmp} is often held in memory:
+for large files, point \opt{--tmpdir} at a disk.
+\end{note}
+
+\subsection{Pipes and standard input}
+
+Without a file name, or with \cmd{-}, \fl{} reads standard input and takes keys
+from \file{/dev/tty}. Named pipes open like files; devices need \opt{-f}.
+
+Streams are shown while they are still being written, so
+\cmd{make 2>\&1 | fastless} and \cmd{tail -f log | fastless} show output as it
+arrives. While a stream is being read, its size is not known: the status shows
+\textit{(reading)}, moving past the end waits for more data, \kbd{G} and
+\kbd{\%} follow the end until the input ends, and forward searches go on into
+input as it arrives. Any key ends a wait.
+
+Up to \opt{--max-mem} (but at least 64\,MiB) is read ahead so that the writer is
+never held up. Beyond that, input is read only as far as the screen, a search,
+or a jump needs, so \cmd{yes | fastless} does not fill the disk. A compressed
+stream is read whole, then decoded. When standard output is not a terminal, a
+pipe is copied straight through in constant memory.
+
+\subsection{Input preprocessors}
+
+\env{LESSOPEN} and \env{LESSCLOSE} work as in \cmd{less}: \cmd{|cmd~\%s} pages the
+command's output, \cmd{||cmd~\%s} also accepts empty output, and \cmd{cmd~\%s}
+names a replacement file. Files that begin with a compressed format's magic bytes
+skip the preprocessor, because the built-in decoders are faster;
+\cmd{-L --compression=none} shows their raw bytes. \opt{-L} ignores
+\env{LESSOPEN} altogether, and \opt{--show-preproc-errors} reports failures.
+
+% ---------------------------------------------------------------- display
+\section{Display, line numbers, and prompts}\label{sec:prompts}
+
+\subsection{How text is shown}
+
+Text is shown as UTF-8 when \env{LESSCHARSET} or the locale says UTF-8;
+otherwise bytes above 127 appear as \cmd{<XX>}. Control characters appear in bold
+as \cmd{\caret X}, and invalid or unprintable characters as \cmd{<XX>} or
+\cmd{<U+XXXX>}, so a file can never send escape sequences to the terminal.
+\opt{-R} passes ANSI colour sequences through. As in \cmd{less}, an overstruck
+character is bold, an underscore overstrike underlines, a carriage return before
+a newline is hidden, and tabs expand to the \opt{-x} stops.
+
+\subsection{Line numbers}
+
+\opt{-N} shows a line number before each line. Prompts can show line numbers too:
+\opt{-M} and \kbd{=} give \textit{lines 6--12/100}. Nothing is counted unless
+something on the screen shows a number, so without \opt{-N} or such a prompt
+there is no cost at all. When numbers are needed, newlines are counted with SIMD
+on all search threads and remembered per 64\,MiB piece. A long jump into
+uncounted territory never waits: the screen appears at once, the numbers fill in
+when they are known, and a counter shows the progress of longer counts.
+\kbd{\caret C} during counting turns line numbers off, as in \cmd{less}.
+
+\subsection{Prompts}
+
+\opt{-m}, \opt{-M}, and \opt{-P} select \cmd{less}'s medium, long, or custom
+prompts and its prompt language. \opt{-Ps} (or \opt{-P} alone) sets the short
+prompt, \opt{-Pm} and \opt{-PM} the medium and long ones, \opt{-P=} the \kbd{=}
+message, \opt{-Ph} the help prompt, and \opt{-Pw} the prompt while waiting for a
+pipe. The escapes are:
+
+\begin{multicols}{2}\small
+\begin{tabular}{@{}>{\ttfamily}l l@{}}
+\%f & file name \\
+\%F & last component of the name \\
+\%g & name, quoted for the shell \\
+\%i, \%m & file index, number of files \\
+\%x & next file's name \\
+\%b, \%B & byte offset, size \\
+\%p, \%P & percent, by bytes / by lines \\
+\end{tabular}
+\columnbreak
+
+\begin{tabular}{@{}>{\ttfamily}l l@{}}
+\%l, \%L & line number, last line \\
+\%d, \%D & page number, page count \\
+\%c & column of the left edge \\
+\%s & size, as \%B \\
+\%t, \%T & trim spaces / the word ``file'' \\
+\%E & the editor \\
+?\textit{x}\ldots:\ldots. & conditionals \\
+\end{tabular}
+\end{multicols}
+
+\vspace{-1ex}
+A line-number item shows \cmd{?}, and its conditional is false, until the number
+is known. While a pipe is still being read, the conditions on its size
+(\cmd{?s}, \cmd{?B}, \cmd{?p}, \cmd{?P}, \cmd{?L}, \cmd{?D}, \cmd{?e}) are false.
+
+% ---------------------------------------------------------------- misc commands
+\section{Other commands}
+
+\begin{reftable}
+\thead{Keys}{Action}
+\kbd{-}\meta{x} \,/\, \kbd{-}\kbd{-}\meta{name} & Toggle or set an option; \cmd{-+}\meta{x} resets it, \cmd{-!}\meta{x} sets its opposite. \\
+\kbd{\_}\meta{x} \,/\, \kbd{\_}\kbd{\_}\meta{name} & Show an option's setting. \\
+\kbd{+}\meta{cmd} & Run \meta{cmd} in each file examined from now on. \\
+\kbd{!}\meta{command} & Run a shell command: \cmd{\%} is the file name, \cmd{\#} the previous file, \cmd{!!} the last command. \\
+\kbd{\#}\meta{command} & The same, expanding prompt escapes. \\
+\kbd{|}\meta{x}\,\meta{command} & Pipe the text from mark \meta{x} (or \cmd{\caret}, \cmd{\$}, \cmd{.}) through the screen into \meta{command}. \\
+\kbd{s}\,\meta{file} & Save the input; for compressed files, the decoded data. \\
+\kbd{v} & Edit the file with \env{\$VISUAL}, \env{\$EDITOR}, or \cmd{vi}, at the current line. \\
+\kbd{h} \kbd{H} \,/\, \kbd{V} & Help / version. \\
+\kbd{q} \kbd{Q} \kbd{:q} \kbd{:Q} \kbd{ZZ} & Quit, or leave the help. \\
+\kbd{\caret C} & Cancel a search, count, wait, or \kbd{F}. \\
+\kbd{\caret Z} & Suspend. \\
+\end{reftable}
+
+\subsection{Editing a prompt}
+
+Prompts for patterns, file names, and commands have \cmd{less}'s line editing:
+\kbd{Left} \kbd{Right} (\kbd{ESC-h} \kbd{ESC-l}), word moves with \kbd{\caret Left}
+\kbd{\caret Right} (\kbd{ESC-b} \kbd{ESC-w}), \kbd{Home} \kbd{End} (\kbd{ESC-0}
+\kbd{ESC-\$}), \kbd{Del} (\kbd{ESC-x}), word deletion with \kbd{ESC-Bksp} and
+\kbd{ESC-X}, \kbd{\caret U} to clear the line, \kbd{\caret V} to enter a character
+literally, and \kbd{Up} \kbd{Down} for history, matching what was typed.
+\kbd{Bksp} on an empty prompt, \kbd{\caret G}, or a lone \kbd{ESC} cancels.
+History is kept in \file{\tl/.fastlesshst} (\env{FASTLESSHISTFILE}).
+
+% ---------------------------------------------------------------- options
+\section{Options}
+
+Options are read from the \env{LESS} environment variable first, then from the
+command line. Long options may be shortened to any unique prefix, and most can be
+changed inside the pager with \kbd{-}. In \env{LESS}, string values end at
+\cmd{\$} and unknown options are ignored. Options marked
+\textsf{\footnotesize\color{accent}fastless} are not in \cmd{less}.
+
+\newcommand{\own}{\hfill\textsf{\footnotesize\color{accent}fastless}}
+
+\subsection{Searching}
+\begin{reftable}[0.34\linewidth]
+\thead{Option}{Meaning}
+\opt{--regex}, \opt{--literal}, \opt{--glob} & The search mode. \own \\
+\opt{-i}, \opt{--ignore-case} & Ignore case if the pattern has no capitals. \\
+\opt{-I}, \opt{--IGNORE-CASE} & Always ignore case. \\
+\opt{--case-sensitive} & Turn \opt{-i} and \opt{-I} off. \own \\
+\opt{-a}, \opt{--search-skip-screen} & Start forward searches after the screen. \\
+\opt{-A}, \opt{--SEARCH-SKIP-SCREEN} & Start them just after the target line. \\
+\opt{-g}, \opt{--hilite-search} & Highlight only the match found. \\
+\opt{-G}, \opt{--HILITE-SEARCH} & Highlight nothing. \\
+\opt{--incsearch} & Search while the pattern is typed. \\
+\opt{--search-options=}\meta{EFKNRW} & Modifiers for every search; \cmd{-} clears those before it. \\
+\opt{-p}\,\meta{pattern}, \opt{--pattern} & Search when the first file opens. \\
+\opt{-j}\,\meta{n}, \opt{--jump-target} & The target line: a line (negative from the bottom) or a fraction such as \cmd{.5}. \\
+\opt{--match-shift=}\meta{n} & Columns kept left of a match scrolled into view. \\
+\opt{--find=}\meta{pattern} & Print the first match's byte offset and exit. \own \\
+\opt{--all} & With \opt{--find}, print every match. \own \\
+\opt{--offset=}\meta{byte} & Start the pager or the search at a byte offset. \own \\
+\end{reftable}
+
+\subsection{Display}
+\begin{reftable}[0.34\linewidth]
+\thead{Option}{Meaning}
+\opt{-R}, \opt{--RAW-CONTROL-CHARS} & Pass ANSI colour sequences through. \\
+\opt{-r}, \opt{--raw-control-chars} & The same as \opt{-R}. \\
+\opt{-N}, \opt{--LINE-NUMBERS} & Show line numbers. \\
+\opt{-n}, \opt{--line-numbers} & Show no line numbers, in prompts either. \\
+\opt{--line-num-width=}\meta{n} & Width of the number column (7). \\
+\opt{--no-number-headers} & Leave header lines unnumbered. \\
+\opt{-s}, \opt{--squeeze-blank-lines} & Show runs of blank lines as one. \\
+\opt{-x}\,\meta{n,...}, \opt{--tabs} & Tab stops (8). \\
+\opt{-\tl}, \opt{--tilde} & No \cmd{\tl} after the end of the file. \\
+\opt{-\#}\,\meta{n}, \opt{--shift} & Horizontal step: columns, a fraction, or 0 for half the screen. \\
+\opt{--header=}\meta{L,C,N} & Keep \meta{L} lines (from line \meta{N}) and \meta{C} columns in place. \\
+\opt{--no-search-header-lines} & Searches skip header lines; \opt{--no-search-header-columns} columns, \opt{--no-search-headers} both. \\
+\opt{-J}, \opt{--status-column} & A column marking marks and matching lines. \\
+\opt{--status-col-width=}\meta{n} & Its width (2). \\
+\opt{--status-line} & Highlight marked lines. \\
+\opt{-u}, \opt{--underline-special} & Show backspaces and carriage returns as control characters. \\
+\opt{-U}, \opt{--UNDERLINE-SPECIAL} & Also tabs. \\
+\opt{--proc-backspace}, \opt{--proc-return}, \opt{--proc-tab} & Process that character whatever \opt{-u} says. \\
+\opt{--PROC-BACKSPACE}, \opt{--PROC-RETURN}, \opt{--PROC-TAB} & Show it as a control character whatever \opt{-u} says. \\
+\opt{--rscroll=}\meta{c} & The mark for a chopped line (\cmd{>}; \cmd{-} for none). \\
+\opt{-w}, \opt{--hilite-unread} & Highlight the first new line after a page forward. \\
+\opt{-W}, \opt{--HILITE-UNREAD} & \ldots{} after any forward movement. \\
+\opt{-m}, \opt{--long-prompt} & \cmd{less}'s medium prompt. \\
+\opt{-M}, \opt{--LONG-PROMPT} & \cmd{less}'s long prompt. \\
+\opt{-P}\meta{prompt}, \opt{--prompt} & A custom prompt (Section~\ref{sec:prompts}). \\
+\opt{-c}, \opt{--clear-screen}, \opt{-C}, \opt{--CLEAR-SCREEN} & Repaint by clearing the screen. \\
+\opt{-X}, \opt{--no-init} & Use the normal screen, not the alternate one. \\
+\opt{--redraw-on-quit} & Leave the last screen on the terminal. \\
+\opt{-z}\,\meta{n}, \opt{--window} & Window size; negative counts from the screen height. \\
+\opt{--mouse}, \opt{--MOUSE} & Wheel scrolling; upper case reverses it. \\
+\opt{--wheel-lines=}\meta{n} & Lines per wheel step (1). \\
+\end{reftable}
+
+\subsection{Quitting and the bell}
+\begin{reftable}[0.34\linewidth]
+\thead{Option}{Meaning}
+\opt{-e}, \opt{--quit-at-eof} & Quit on a forward command at the end. \\
+\opt{-E}, \opt{--QUIT-AT-EOF} & Quit as soon as the end is shown. \\
+\opt{-F}, \opt{--quit-if-one-screen} & Print a file that fits on one screen and exit. \\
+\opt{-K}, \opt{--quit-on-intr} & Quit with status 2 on \kbd{\caret C}. \\
+\opt{--intr=}\meta{c} & Another character that acts as \kbd{\caret C} (\kbd{\caret X}). \\
+\opt{-q}, \opt{--quiet}, \opt{--silent} & Ring the bell only for errors. \\
+\opt{-Q}, \opt{--QUIET}, \opt{--SILENT} & Never ring the bell. \\
+\end{reftable}
+
+\subsection{Input and resources}
+\begin{reftable}[0.34\linewidth]
+\thead{Option}{Meaning}
+\opt{--compression=}\meta{format} & \cmd{auto}, \cmd{none}, \cmd{gzip}, \cmd{zstd}, \cmd{xz}, or \cmd{bzip2}. \own \\
+\opt{--max-mem=}\meta{GiB} & Memory for decoded or piped input before a temporary file (10). \own \\
+\opt{--tmpdir=}\meta{dir} & Where temporary files go. \own \\
+\opt{--threads=}\meta{n} & Threads for searching, counting, xz and bzip2: 1--256, or 0 for one per CPU up to 32. \own \\
+\opt{--simd=}\meta{mode} & \cmd{auto}, \cmd{off}, or \cmd{avx2} for literal searches. \own \\
+\opt{-f}, \opt{--force} & Open devices and other non-regular files. \\
+\opt{-L}, \opt{--no-lessopen} & Ignore \env{LESSOPEN}. \\
+\opt{--show-preproc-errors} & Report a failing preprocessor. \\
+\opt{--follow-name} & \kbd{F} reopens a file replaced under its name. \\
+\opt{--lesskey-src=}\meta{file} & Key bindings from a lesskey source file. \\
+\opt{--lesskey-content=}\meta{text} & Key bindings as text; lines end at newlines or \cmd{;}. \\
+\opt{--save-marks} & Keep marks between sessions. \\
+\opt{--no-histdups} & Drop earlier copies of a command from the history. \\
+\opt{+}\meta{cmd}, \opt{++}\meta{cmd} & Run \meta{cmd} in the first / every file, as in \cmd{+G} or \cmd{+/error}. \\
+\opt{-V}, \opt{--version} & Print the version. \\
+\opt{-?}, \opt{--help} & Print an option summary. \\
+\end{reftable}
+
+\subsection{Accepted, but without effect}
+
+\opt{-b} (\opt{--buffers}), \opt{-B} (\opt{--auto-buffers}), \opt{-d}
+(\opt{--dumb}), \opt{-h} (\opt{--max-back-scroll}), \opt{-S}
+(\opt{--chop-long-lines}), \opt{-y} (\opt{--max-forw-scroll}), \opt{--file-size},
+\opt{--no-keypad}, \opt{--no-vbell}, and \opt{--exit-follow-on-close} are accepted
+so that existing \env{LESS} settings keep working. Lines are always chopped, as
+with \opt{-S}.
+
+\subsection{Not supported}
+
+\opt{-o}, \opt{--log-file}, \opt{-O}, and \opt{--LOG-FILE} (log files);
+\opt{-t}, \opt{--tag}, \opt{-T}, and \opt{--tag-file} (tags); \opt{-D},
+\opt{--color}, and \opt{--use-color} (colours); \opt{--wordwrap};
+\opt{--modelines}; \opt{-"} and \opt{--quotes}; \opt{--use-backslash}; and
+\opt{-k} and \opt{--lesskey-file} (compiled lesskey files) are refused with a
+message.
+
+% ---------------------------------------------------------------- keys / env
+\section{Key bindings and the environment}
+
+\subsection{lesskey files}
+
+Keys can be rebound with \cmd{lesskey} source: \opt{--lesskey-src}, or else the
+first of \env{\$LESSKEYIN}, \file{\$XDG\_CONFIG\_HOME/lesskey},
+\file{\tl/.config/lesskey}, and \file{\tl/.lesskey}; then \env{LESSKEY\_CONTENT}
+and \opt{--lesskey-content}. The \cmd{\#command}, \cmd{\#line-edit}, and
+\cmd{\#env} sections, \cmd{\#stop}, \cmd{\bs k} key names, and extra strings
+work as in \cmd{lesskey}(1). Besides \cmd{less}'s actions there are
+\cmd{regex-mode}, \cmd{literal-mode}, and \cmd{glob-mode}; the tag and OSC~8
+hyperlink actions are accepted but do nothing.
+
+\begin{shell}
+#command
+t     forw-screen
+x     literal-mode
+#env
+LESS = -iR
+\end{shell}
+
+\subsection{Environment variables}
+
+\begin{reftable}[0.30\linewidth]
+\thead{Variable}{Use}
+\env{LESS} & Options read before the command line. \\
+\env{LESSOPEN}, \env{LESSCLOSE} & Input preprocessors. \\
+\env{LESSEDIT} & The editor command for \kbd{v}, in prompt language (\cmd{\%E ?lm+\%lm. \%g}). \\
+\env{VISUAL}, \env{EDITOR} & The editor; empty counts as unset (\cmd{vi}). \\
+\env{SHELL} & The shell for \kbd{!}, \kbd{\#}, and \kbd{|}. \\
+\env{LESSSECURE} & When \cmd{1}: no shell commands, pipes, saving, editing, \cmd{:e}, preprocessors, or history. \\
+\env{LESSCHARSET} & \cmd{utf-8} for UTF-8, anything else for single bytes; unset, the locale decides. \\
+\env{LESSKEYIN}, \env{LESSKEY\_CONTENT} & Key bindings. \\
+\env{FASTLESSHISTFILE} & The history file (\file{\tl/.fastlesshst}; \cmd{-} for none). \\
+\env{TMPDIR} & Temporary files, without \opt{--tmpdir}. \\
+\end{reftable}
+
+\subsection{Exit status}
+
+\begin{reftable}[0.12\linewidth]
+\thead{Status}{Meaning}
+0 & Success; for \opt{--find}, something matched. \\
+1 & \opt{--find} found nothing. \\
+2 & An error, such as an unreadable file or damaged compressed data, or \kbd{\caret C} with \opt{-K}. \\
+130 & Interrupted by \kbd{\caret C} outside the pager, as while decoding. \\
+128+$n$ & Ended by signal $n$, such as SIGTERM. \\
+\end{reftable}
+
+% ---------------------------------------------------------------- differences
+\section{Differences from GNU less}\label{sec:less}
+
+\fl{} follows \cmd{less} 668 wherever it can, so muscle memory, \env{LESS}
+settings, and lesskey files carry over. These are the places where it does not.
+
+\subsection{What fastless adds}
+
+\begin{reftable}[0.27\linewidth]
+\thead{Feature}{Details}
+Search modes & Literal and whole-line glob searches beside regular expressions
+  (\opt{--literal}, \opt{--glob}, \kbd{ESC-r} \kbd{ESC-l} \kbd{ESC-w}). \\
+Built-in decoding & gzip, zstd, xz, and bzip2, detected by content, decoded on several
+  threads, verified; \opt{--compression}, \opt{--max-mem}, \opt{--tmpdir}. \\
+Parallel search & Long searches and line counts use every core
+  (\opt{--threads}); literal matching uses AVX2 (\opt{--simd}). \\
+Byte positions & \kbd{P} jumps to a byte offset, and \opt{--offset} starts there. \\
+Batch search & \opt{--find} and \opt{--all} print match offsets without the pager. \\
+Status line & A default status line with file, position, and search mode. \\
+\end{reftable}
+
+\subsection{What behaves differently}
+
+\begin{reftable}[0.27\linewidth]
+\thead{Area}{In fastless}
+Long lines & Always chopped, never wrapped: \opt{-S} is the only behaviour, and
+  \opt{--wordwrap} is not supported. \\
+Line numbers & Counted lazily, only when something shows them; a long jump does not
+  wait for the count. \cmd{less} counts as it reads. \\
+Regular expressions & POSIX extended expressions from the C library in the C
+  locale, so case folding is ASCII only. Literal searches also match across line
+  ends. \\
+Positions & Offsets, percentages, and the status line count bytes of the decoded
+  data. \\
+Preprocessors & Compressed files bypass \env{LESSOPEN}. Standard input is never
+  preprocessed, even with the \cmd{|-} form. \\
+Control characters & \opt{-r} is the same as \opt{-R}: only colour sequences reach the
+  terminal, and \opt{-u} never sends raw backspaces or carriage returns. Other bytes
+  show as \cmd{\caret X}, \cmd{<XX>}, or \cmd{<U+XXXX>}; \env{LESSBINFMT} is not used. \\
+\opt{-?} & Prints an option summary and exits, rather than opening the help screen. \\
+History & Kept in \file{\tl/.fastlesshst} (\env{FASTLESSHISTFILE}), apart from
+  \cmd{less}'s. \\
+\end{reftable}
+
+\subsection{What is not supported}
+
+\begin{itemize}
+\item Tags (\opt{-t}, \opt{-T}, \cmd{:t}), log files (\opt{-o}, \opt{-O}), colours
+  (\opt{-D}, \opt{--use-color}), \opt{--modelines}, \opt{-"},
+  \opt{--use-backslash}, OSC~8 hyperlinks, and compiled lesskey files (\opt{-k}).
+\item The \opt{-}\meta{n} form of \opt{-z}\meta{n} (as in \opt{-20}), and
+  capitalising only the first letter of an upper-case long option (as in
+  \opt{--Quit-at-eof}).
+\item Environment variables not listed above, such as \env{LESSHISTFILE},
+  \env{LESSANSIENDCHARS}, \env{LESSMETACHARS}, \env{LESS\_IS\_MORE}, and the
+  \env{LESS\_TERMCAP\_*} variables.
+\item Character sets other than UTF-8 and single bytes.
+\end{itemize}
+
+% ---------------------------------------------------------------- performance
+\section{Performance and limits}
+
+\subsection{What to expect}
+
+Opening a plain file costs nothing, whatever its size. Searching reads the bytes
+it covers from storage, so a cold search runs at disk speed; once the file is
+cached, literal searches run at several GiB per second. On an 8-core Ryzen 7
+5700X with a warm cache, a case-insensitive literal search measured about
+8.2\,GiB/s, and a regex without a usable literal ran 6.7 times faster on eight
+threads than on one. Numbering the end of a 4\,GiB, 84-million-line file took
+0.15\,s.
+
+bzip2 decoding, 556\,MiB of logs compressed by \cmd{bzip2 -9}, wall time:
+
+\begin{center}\small
+\begin{tabular}{@{}rrrr@{}}
+\toprule
+\textsf{\bfseries Threads} & \textsf{\bfseries bzip2 (libbz2)} & \textsf{\bfseries lbzip2} & \textsf{\bfseries fastless} \\
+\midrule
+1 & 11.6\,s & 9.5\,s & 9.4\,s \\
+4 & --- & 2.4\,s & 2.4\,s \\
+16 & --- & 1.8\,s & 1.8\,s \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Limits}
+
+\begin{itemize}
+\item A mapped file must not be truncated while it is shown, or the program may
+  be killed by SIGBUS, as with any program that maps files. Replacing
+  the file by name changes nothing unless \kbd{F} is used with
+  \opt{--follow-name}.
+\item A regular expression cannot match within a single line longer than
+  2\,GiB; literal and glob searches can.
+\item Archive members, such as those of a tar file, are not extracted; only the
+  compression is removed.
+\item \kbd{\caret C} is checked between pieces of work, so one very long line or
+  one costly regular-expression call can delay it.
+\item \fl{} needs a 64-bit system with POSIX \cmd{REG\_STARTEND}, such as Linux or
+  macOS.
+\end{itemize}
+
+\subsection{Licence}
+
+\fl{} is free software under the GNU General Public License, version 3. It includes
+the bzip2 block decoder of lbzip2, which is licensed under the GPL, version 3 or
+later.
+
+\end{document}
